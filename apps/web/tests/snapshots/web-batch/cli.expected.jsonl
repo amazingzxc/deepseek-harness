@@ -1,0 +1,6 @@
+{"version":0,"type":"batch.started","batchId":"123e4567-e89b-42d3-a456-426614174000","taskCount":1,"concurrency":1}
+{"version":0,"type":"task.state","batchId":"123e4567-e89b-42d3-a456-426614174000","taskId":"question","sessionId":"{{sessionId}}","state":"running","pending":[]}
+{"version":0,"type":"task.state","batchId":"123e4567-e89b-42d3-a456-426614174000","taskId":"question","sessionId":"{{sessionId}}","state":"waiting-human","pending":["question"]}
+{"version":0,"type":"task.state","batchId":"123e4567-e89b-42d3-a456-426614174000","taskId":"question","sessionId":"{{sessionId}}","state":"running","pending":[]}
+{"version":0,"type":"task.state","batchId":"123e4567-e89b-42d3-a456-426614174000","taskId":"question","sessionId":"{{sessionId}}","state":"completed","pending":[],"reason":{"kind":"completed"},"text":"DONE"}
+{"version":0,"type":"batch.finished","batchId":"123e4567-e89b-42d3-a456-426614174000","counts":{"completed":1,"failed":0,"cancelled":0}}
