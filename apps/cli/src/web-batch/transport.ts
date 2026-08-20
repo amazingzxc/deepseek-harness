@@ -127,6 +127,8 @@ export interface BatchConnectionConfig {
   backoffFactor?: number
   /** Maximum delay between attempts. */
   backoffMaxMs?: number
+  /** Maximum time to wait for both event streams to open. */
+  streamOpenTimeoutMs?: number
 }
 
 /** Business-frame sinks owned by the batch runner. */
@@ -145,6 +147,7 @@ const CONNECTION_DEFAULTS: Required<BatchConnectionConfig> = {
   backoffBaseMs: 500,
   backoffFactor: 2,
   backoffMaxMs: 10_000,
+  streamOpenTimeoutMs: 3_000,
 }
 
 function delay(ms: number, signal: AbortSignal): Promise<void> {
@@ -155,6 +158,22 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
       clearTimeout(timer)
       signal.removeEventListener('abort', done)
       resolve()
+    }
+  })
+}
+
+function rejectAfterStreamOpenTimeout(ms: number, signal: AbortSignal): Promise<never> {
+  return new Promise((_, reject) => {
+    const timer = setTimeout(expire, ms)
+    signal.addEventListener('abort', cancel, { once: true })
+    if (signal.aborted) cancel()
+    function expire(): void {
+      signal.removeEventListener('abort', cancel)
+      reject(new Error(`event streams did not open within ${String(ms)}ms`))
+    }
+    function cancel(): void {
+      clearTimeout(timer)
+      signal.removeEventListener('abort', cancel)
     }
   })
 }
@@ -228,6 +247,7 @@ export class BatchConnection {
           (envelope) => { this.sinks.onHostEnvelope(envelope) },
         )
         const generationEnded = Promise.race([mux, host])
+        const streamOpenDeadline = new AbortController()
         try {
           const description = this.api.host.describe({}, controller.signal)
           const handshake = Promise.all([description, streamsOpen]).then(([response]) => {
@@ -237,6 +257,7 @@ export class BatchConnection {
           })
           await Promise.race([
             handshake,
+            rejectAfterStreamOpenTimeout(this.config.streamOpenTimeoutMs, streamOpenDeadline.signal),
             generationEnded.then(() => { throw new Error('event stream ended during connection handshake') }),
           ])
           attempt = 0
@@ -254,6 +275,7 @@ export class BatchConnection {
         } catch (error) {
           if (this.isRunning()) this.diagnose('event connection failed; reconnecting', error)
         } finally {
+          streamOpenDeadline.abort()
           controller.abort()
           await Promise.allSettled([mux, host])
           if (this.generation === controller) this.generation = undefined

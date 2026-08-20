@@ -101,7 +101,57 @@ function stream<F>(
   }
 }
 
+function openUntilAbort<F>(
+  signal: AbortSignal,
+  onOpen: (() => void) | undefined,
+): AsyncIterable<RpcRequest<F>> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      onOpen?.()
+      await new Promise<void>((resolve) => {
+        signal.addEventListener('abort', () => { resolve() }, { once: true })
+        if (signal.aborted) resolve()
+      })
+    },
+  }
+}
+
 describe('BatchConnection', () => {
+  it('reconnects when one event stream does not open before the deadline', async () => {
+    let generation = 0
+    const diagnostics: string[] = []
+    const api = {
+      host: {
+        describe: async () => ({
+          rpcId: 'describe' as never,
+          result: {
+            ok: true as const,
+            value: { version: '1', cwd: '/work', attachedSessions: 0, canOpenPath: false },
+          },
+        }),
+      },
+      events: {
+        mux: (_payload: unknown, signal: AbortSignal, onOpen?: () => void) => {
+          return openUntilAbort<MuxFrame>(signal, generation === 0 ? undefined : onOpen)
+        },
+        host: (_payload: unknown, signal: AbortSignal, onOpen?: () => void) => {
+          generation += 1
+          return openUntilAbort<HostFrame>(signal, onOpen)
+        },
+      },
+    } as unknown as IApiClient
+    const connection = new BatchConnection(api, {
+      onMuxEnvelope() {},
+      onHostEnvelope() {},
+      onDiagnostic: (message) => { diagnostics.push(message) },
+    }, { backoffBaseMs: 1, backoffMaxMs: 1, streamOpenTimeoutMs: 5 })
+
+    await connection.start()
+    expect(generation).toBe(2)
+    expect(diagnostics).toContain('event connection failed; reconnecting')
+    await connection.stop()
+  })
+
   it('reconnects both streams, isolates sink failures, and stops at quiescence', async () => {
     let generation = 0
     let releaseFirst = (): void => {}
