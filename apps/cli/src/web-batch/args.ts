@@ -3,7 +3,7 @@
 import { Command, CommanderError } from 'commander'
 
 /** Start a new batch from a JSONL manifest. */
-export interface RunBatchInvocation {
+interface RunBatchInvocation {
   mode: 'run'
   origin: string
   manifest: string
@@ -12,7 +12,7 @@ export interface RunBatchInvocation {
 }
 
 /** Resume a persisted non-terminal batch. */
-export interface ResumeBatchInvocation {
+interface ResumeBatchInvocation {
   mode: 'resume'
   origin: string
   batchId: string
@@ -20,7 +20,7 @@ export interface ResumeBatchInvocation {
 }
 
 /** Print the persisted state of a batch without connecting to its Web Host. */
-export interface StatusBatchInvocation {
+interface StatusBatchInvocation {
   mode: 'status'
   batchId: string
 }

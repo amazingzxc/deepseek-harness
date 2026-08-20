@@ -6,7 +6,6 @@ import type { IApiClient } from '@deepseek-ai/dsh-host-apiproxy'
 import type { WebBatchInvocation } from './args.ts'
 import { loadTaskManifest } from './manifest.ts'
 import {
-  batchCounts,
   batchFinished,
   batchFinishedOutput,
   taskStateOutput,
@@ -18,7 +17,7 @@ import { WebBatchStore } from './store.ts'
 import { BatchConnection, NodeWebApiClient, type BatchConnectionSinks } from './transport.ts'
 
 /** Process surfaces used by the command implementation. */
-export interface WebBatchCommandIo {
+interface WebBatchCommandIo {
   stdout: { write(chunk: string): unknown }
   stderr: { write(chunk: string): unknown }
 }
@@ -145,6 +144,3 @@ export async function runWebBatchCommand(
     store.close()
   }
 }
-
-/** Public terminal counts used by acceptance tests and callers inspecting status. */
-export { batchCounts }

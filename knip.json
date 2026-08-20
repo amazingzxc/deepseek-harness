@@ -728,6 +728,7 @@
     },
     "apps/cli": {
       "entry": [
+        "src/web-batch-bin.ts",
         "tests/**/*.spec.ts",
         "tests/**/*.e2e.ts",
         "tests/**/*.snapshot.ts"

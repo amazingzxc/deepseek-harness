@@ -3,7 +3,7 @@
 import type { BatchRecord, BatchTaskRecord } from './types.ts'
 
 /** Aggregate terminal task counts. */
-export interface BatchCounts {
+interface BatchCounts {
   completed: number
   failed: number
   cancelled: number
@@ -41,7 +41,7 @@ export function taskStateOutput(batchId: string, task: BatchTaskRecord): BatchOu
 }
 
 /** Count terminal outcomes; non-terminal tasks do not enter any count. */
-export function batchCounts(tasks: readonly BatchTaskRecord[]): BatchCounts {
+function batchCounts(tasks: readonly BatchTaskRecord[]): BatchCounts {
   return tasks.reduce<BatchCounts>((counts, task) => {
     if (task.state === 'completed' || task.state === 'failed' || task.state === 'cancelled') {
       counts[task.state] += 1
