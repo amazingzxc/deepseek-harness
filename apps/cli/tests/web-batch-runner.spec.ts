@@ -58,6 +58,7 @@ interface FakeApiOptions {
   create?(sessionId: string, calls: number): Promise<void> | void
   history?(sessionId: string, entries: readonly HistoryEntry[]): Promise<readonly HistoryEntry[]> | readonly HistoryEntry[]
   prompt?(sessionId: string, prompt: string, calls: number): Promise<void> | void
+  subscribe?(sessionId: string, calls: number): boolean
 }
 
 class FakeApi {
@@ -75,9 +76,11 @@ class FakeApi {
         create: async (payload: { sessionId?: string }) => {
           const sessionId = payload.sessionId as string
           this.createCalls.push(sessionId)
-          this.runner?.handleMuxEnvelope(mux({
-            type: 'session/subscribed', sessionId: sessionId as never, lastSeq: -1,
-          }))
+          if (this.options.subscribe?.(sessionId, this.createCalls.length) !== false) {
+            this.runner?.handleMuxEnvelope(mux({
+              type: 'session/subscribed', sessionId: sessionId as never, lastSeq: -1,
+            }))
+          }
           await this.options.create?.(sessionId, this.createCalls.length)
           return { rpcId: randomUUID() as never, result: { ok: true, value: { sessionId: sessionId as never } } }
         },
@@ -141,7 +144,10 @@ async function harness(
   }, { retryBaseMs: 1, retryMaxMs: 1 })
   api.runner = runner
   const connection: BatchConnectionLifecycle = {
-    async start() { runner.handleConnected() },
+    async start() {
+      runner.handleGenerationStarting()
+      runner.handleConnected()
+    },
     async stop() {},
   }
   return { store, runner, outputs, connection, close: () => { store.close() } }
@@ -344,6 +350,46 @@ describe('WebBatchRunner', () => {
     }
   })
 
+  it('waits for the current generation baseline before reconnect reconciliation', async () => {
+    const api = new FakeApi({
+      subscribe(_sessionId, calls) {
+        return calls === 1
+      },
+      history(sessionId, entries) {
+        if (api.historyCalls.length === 2) {
+          api.publish(sessionId, promptEvents('prompt-0').slice(2))
+        }
+        return entries
+      },
+      prompt(sessionId, prompt) {
+        const open = promptEvents(prompt).slice(0, 2)
+        api.histories.set(sessionId, open.map(event => ({ event })))
+        api.publish(sessionId, open)
+      },
+    })
+    const world = await harness(1, 1, api)
+    try {
+      const running = world.runner.run(world.connection, new AbortController().signal)
+      await vi.waitFor(() => { expect(api.promptCalls).toHaveLength(1) })
+
+      world.runner.handleGenerationStarting()
+      world.runner.handleConnected()
+      await vi.waitFor(() => { expect(api.createCalls).toHaveLength(2) })
+      expect(api.historyCalls).toHaveLength(1)
+
+      world.runner.handleMuxEnvelope(mux({
+        type: 'session/subscribed', sessionId: 'session-0' as never, lastSeq: 1,
+      }))
+      await running
+      expect(api.historyCalls).toHaveLength(2)
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+        state: 'completed', promptSeq: 1, turn: 1, text: 'done:prompt-0',
+      }))
+    } finally {
+      world.close()
+    }
+  })
+
   it('fails on another human prompt and reconciles Host-restart interruption', async () => {
     const conflictApi = new FakeApi()
     const conflict = await harness(1, 1, conflictApi)
@@ -372,6 +418,7 @@ describe('WebBatchRunner', () => {
       restartApi.histories.get('session-0')?.push({
         event: sessionEvent('turn/end', 2, { turn: 1, reason: { kind: 'interrupted' } }),
       })
+      restart.runner.handleGenerationStarting()
       restart.runner.handleConnected()
       await running
       expect(restartApi.createCalls).toEqual(['session-0', 'session-0'])

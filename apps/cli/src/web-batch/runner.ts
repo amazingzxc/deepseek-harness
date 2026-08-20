@@ -165,6 +165,7 @@ export class WebBatchRunner {
 
   /** Sinks passed directly to {@link BatchConnection}. */
   readonly connectionSinks: ConstructorParameters<typeof BatchConnection>[1] = {
+    onGenerationStarting: () => { this.handleGenerationStarting() },
     onMuxEnvelope: (envelope) => { this.handleMuxEnvelope(envelope) },
     onHostEnvelope: (envelope) => { this.handleHostEnvelope(envelope) },
     onConnected: () => { this.handleConnected() },
@@ -174,6 +175,13 @@ export class WebBatchRunner {
   /** Snapshot current in-memory state in manifest order. */
   currentTasks(): BatchTaskRecord[] {
     return [...this.tasks.values()].sort((left, right) => left.position - right.position)
+  }
+
+  /** Discard per-stream baselines before a new connection generation starts. */
+  handleGenerationStarting(): void {
+    this.promptQueued.clear()
+    for (const baseline of this.baselines.values()) baseline.resolve()
+    this.baselines.clear()
   }
 
   /** Record one completed connection generation and wake active tasks to reconcile. */
@@ -319,15 +327,16 @@ export class WebBatchRunner {
     })
   }
 
-  private async waitForBaseline(sessionId: string, signal: AbortSignal): Promise<void> {
+  private async waitForBaseline(sessionId: string, signal: AbortSignal): Promise<BaselineState | undefined> {
     while (!signal.aborted) {
       const baseline = this.baselines.get(sessionId)
       if (baseline !== undefined) {
-        await settleOrAbort(baseline.settled, signal)
-        return
+        if (!await settleOrAbort(baseline.settled, signal)) return undefined
+        if (this.baselines.get(sessionId) === baseline) return baseline
       }
       await new Promise<void>(resolve => setImmediate(resolve))
     }
+    return undefined
   }
 
   private addPending(task: BatchTaskRecord, pending: PendingInteraction): void {
@@ -425,9 +434,8 @@ export class WebBatchRunner {
     }
   }
 
-  private finishHistoryBaseline(task: BatchTaskRecord): void {
-    const baseline = this.baselines.get(task.sessionId)
-    if (baseline === undefined || !baseline.historyPending) return
+  private finishHistoryBaseline(task: BatchTaskRecord, baseline: BaselineState): void {
+    if (this.baselines.get(task.sessionId) !== baseline || !baseline.historyPending) return
     baseline.historyPending = false
     for (const event of baseline.events.splice(0)) {
       this.applyDurableEvent(this.latest(task.position), event)
@@ -457,12 +465,13 @@ export class WebBatchRunner {
           this.fail(task, created.result.error)
           break
         }
-        await this.waitForBaseline(task.sessionId, signal)
-        if (aborted(signal)) break
+        const baseline = await this.waitForBaseline(task.sessionId, signal)
+        if (baseline === undefined || aborted(signal)) break
         const history = await this.readHistory(task, signal)
         if (history === undefined) break
         this.reconcileHistory(task, history)
-        this.finishHistoryBaseline(task)
+        if (this.baselines.get(task.sessionId) !== baseline) continue
+        this.finishHistoryBaseline(task, baseline)
         const reconciled = this.latest(position)
         if (terminal(reconciled)) break
         if (reconciled.promptSeq === undefined && !this.promptQueued.has(reconciled.sessionId)) {

@@ -119,6 +119,7 @@ function openUntilAbort<F>(
 describe('BatchConnection', () => {
   it('reconnects when one event stream does not open before the deadline', async () => {
     let generation = 0
+    let starts = 0
     const diagnostics: string[] = []
     const api = {
       host: {
@@ -141,6 +142,7 @@ describe('BatchConnection', () => {
       },
     } as unknown as IApiClient
     const connection = new BatchConnection(api, {
+      onGenerationStarting() { starts += 1 },
       onMuxEnvelope() {},
       onHostEnvelope() {},
       onDiagnostic: (message) => { diagnostics.push(message) },
@@ -148,6 +150,7 @@ describe('BatchConnection', () => {
 
     await connection.start()
     expect(generation).toBe(2)
+    expect(starts).toBe(2)
     expect(diagnostics).toContain('event connection failed; reconnecting')
     await connection.stop()
   })

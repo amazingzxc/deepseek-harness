@@ -133,6 +133,8 @@ export interface BatchConnectionConfig {
 
 /** Business-frame sinks owned by the batch runner. */
 export interface BatchConnectionSinks {
+  /** Observe a generation before either event stream can deliver frames. */
+  onGenerationStarting?(): void
   /** Receive one validated mux envelope. */
   onMuxEnvelope(envelope: RpcRequest<MuxFrame>): void
   /** Receive one validated Host envelope. */
@@ -232,6 +234,11 @@ export class BatchConnection {
       while (this.isRunning()) {
         const controller = new AbortController()
         this.generation = controller
+        try {
+          this.sinks.onGenerationStarting?.()
+        } catch (error) {
+          this.diagnose('connection generation sink failed', error)
+        }
         let muxOpened = (): void => {}
         let hostOpened = (): void => {}
         const streamsOpen = Promise.all([
