@@ -132,6 +132,8 @@ function terminalState(reason: TurnEndReason): BatchTaskRecord['state'] {
 interface BaselineState {
   settled: Promise<void>
   resolve(): void
+  historyPending: boolean
+  events: SessionEvent[]
 }
 
 /** Scheduler state machine over one opened {@link WebBatchStore}. */
@@ -192,9 +194,15 @@ export class WebBatchRunner {
       case 'session/subscribed':
         this.beginBaseline(task)
         break
-      case 'session/event':
-        this.applyDurableEvent(task, frame.event)
+      case 'session/event': {
+        const baseline = this.baselines.get(task.sessionId)
+        if (baseline?.historyPending === true) {
+          baseline.events.push(frame.event)
+        } else {
+          this.applyDurableEvent(task, frame.event)
+        }
         break
+      }
       case 'approval/requested':
         this.addPending(task, { kind: 'approval', id: frame.approvalId })
         break
@@ -293,6 +301,8 @@ export class WebBatchRunner {
     const baseline: BaselineState = {
       settled: new Promise<void>((done) => { resolve = done }),
       resolve: () => { resolve() },
+      historyPending: true,
+      events: [],
     }
     this.baselines.set(task.sessionId, baseline)
     this.promptQueued.delete(task.sessionId)
@@ -415,6 +425,15 @@ export class WebBatchRunner {
     }
   }
 
+  private finishHistoryBaseline(task: BatchTaskRecord): void {
+    const baseline = this.baselines.get(task.sessionId)
+    if (baseline === undefined || !baseline.historyPending) return
+    baseline.historyPending = false
+    for (const event of baseline.events.splice(0)) {
+      this.applyDurableEvent(this.latest(task.position), event)
+    }
+  }
+
   private fail(task: BatchTaskRecord, reason: unknown): void {
     if (terminal(task)) return
     this.commit({ ...task, state: 'failed', pending: [], reason })
@@ -443,6 +462,7 @@ export class WebBatchRunner {
         const history = await this.readHistory(task, signal)
         if (history === undefined) break
         this.reconcileHistory(task, history)
+        this.finishHistoryBaseline(task)
         const reconciled = this.latest(position)
         if (terminal(reconciled)) break
         if (reconciled.promptSeq === undefined && !this.promptQueued.has(reconciled.sessionId)) {

@@ -56,6 +56,7 @@ function mux(payload: MuxFrame, rpcId: string = randomUUID()): RpcRequest<MuxFra
 
 interface FakeApiOptions {
   create?(sessionId: string, calls: number): Promise<void> | void
+  history?(sessionId: string, entries: readonly HistoryEntry[]): Promise<readonly HistoryEntry[]> | readonly HistoryEntry[]
   prompt?(sessionId: string, prompt: string, calls: number): Promise<void> | void
 }
 
@@ -82,11 +83,15 @@ class FakeApi {
         },
         history: async (payload: { sessionId: string }) => {
           this.historyCalls.push(payload.sessionId)
+          const entries = this.histories.get(payload.sessionId) ?? []
+          const resolved = this.options.history === undefined
+            ? entries
+            : await this.options.history(payload.sessionId, entries)
           return {
             rpcId: randomUUID() as never,
             result: {
               ok: true as const,
-              value: { events: this.histories.get(payload.sessionId) ?? [], hasMore: false },
+              value: { events: [...resolved], hasMore: false },
             },
           }
         },
@@ -312,6 +317,29 @@ describe('WebBatchRunner', () => {
       await world.runner.run(world.connection, new AbortController().signal)
       expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({ state: 'failed', reason }))
     } finally {
+      world.close()
+    }
+  })
+
+  it('buffers live durable events until history identifies the owned turn', async () => {
+    const api = new FakeApi({
+      history(sessionId, entries) {
+        api.publish(sessionId, promptEvents('prompt-0').slice(2))
+        return entries
+      },
+    })
+    api.histories.set('session-0', promptEvents('prompt-0').slice(0, 2).map(event => ({ event })))
+    const world = await harness(1, 1, api)
+    const abort = new AbortController()
+    const timeout = setTimeout(() => { abort.abort() }, 500)
+    try {
+      await world.runner.run(world.connection, abort.signal)
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+        state: 'completed', promptSeq: 1, turn: 1, text: 'done:prompt-0',
+      }))
+      expect(api.promptCalls).toEqual([])
+    } finally {
+      clearTimeout(timeout)
       world.close()
     }
   })
