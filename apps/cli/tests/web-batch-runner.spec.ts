@@ -416,6 +416,59 @@ describe('WebBatchRunner', () => {
     }
   })
 
+  it.each(['queue', 'event'] as const)(
+    'fails when a rich human prompt enters through the %s stream',
+    async (stream) => {
+      const api = new FakeApi({
+        prompt(sessionId, prompt) {
+          api.publish(sessionId, [sessionEvent('turn/start', 0, { turn: 1 })])
+          const message = {
+            id: 'rich-1' as never,
+            role: 'user' as const,
+            content: [
+              { type: 'text' as const, text: prompt },
+              {
+                type: 'image' as const,
+                attachment: {
+                  attachmentId: 'attachment-1' as never,
+                  mediaType: 'image/png' as const,
+                  bytes: 1,
+                  width: 1,
+                  height: 1,
+                },
+              },
+            ],
+            source: { kind: 'user' as const, rpcId: 'rich-rpc' as never },
+          }
+          if (stream === 'queue') {
+            api.runner?.handleMuxEnvelope(mux({
+              type: 'session/queue',
+              sessionId: sessionId as never,
+              items: [{ id: message.id, placement: 'queued', message }],
+            }))
+          } else {
+            api.publish(sessionId, [sessionEvent('user/message', 1, message)])
+          }
+        },
+      })
+      const world = await harness(1, 1, api)
+      try {
+        await world.runner.run(world.connection, new AbortController().signal)
+        expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+          state: 'failed',
+          reason: {
+            kind: 'session-conflict',
+            message: stream === 'queue'
+              ? 'another human prompt is queued'
+              : 'another human prompt entered the Session',
+          },
+        }))
+      } finally {
+        world.close()
+      }
+    },
+  )
+
   it('buffers live durable events until history identifies the owned turn', async () => {
     const api = new FakeApi({
       history(sessionId, entries) {

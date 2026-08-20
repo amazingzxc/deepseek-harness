@@ -84,23 +84,30 @@ function settleOrAbort(work: Promise<unknown>, signal: AbortSignal): Promise<boo
   })
 }
 
-function directUserText(event: SessionEvent): string | undefined {
-  if (event.type !== 'user/message' || event.data.source.kind !== 'user') return undefined
-  if (event.data.content.length !== 1 || event.data.content[0]?.type !== 'text') return undefined
-  return event.data.content[0].text
+type QueueItem = Extract<MuxFrame, { type: 'session/queue' }>['items'][number]
+type HumanPrompt = { kind: 'text'; text: string } | { kind: 'rich' }
+
+function humanPrompt(message: Pick<QueueItem['message'], 'source' | 'content'>): HumanPrompt | undefined {
+  if (message.source.kind !== 'user') return undefined
+  if (message.content.length !== 1 || message.content[0]?.type !== 'text') return { kind: 'rich' }
+  return { kind: 'text', text: message.content[0].text }
 }
 
-function queuedUserText(item: Extract<MuxFrame, { type: 'session/queue' }>['items'][number]): string | undefined {
-  const { message } = item
-  if (message.source.kind !== 'user' || message.content.length !== 1 || message.content[0]?.type !== 'text') {
-    return undefined
-  }
-  return message.content[0].text
+function directUserPrompt(event: SessionEvent): HumanPrompt | undefined {
+  return event.type === 'user/message' ? humanPrompt(event.data) : undefined
+}
+
+function queuedUserPrompt(item: QueueItem): HumanPrompt | undefined {
+  return humanPrompt(item.message)
+}
+
+function ownsPrompt(input: HumanPrompt, prompt: string): boolean {
+  return input.kind === 'text' && input.text === prompt
 }
 
 interface HistoryInboxState {
-  pending: string[]
-  claimed: Array<{ text: string; turn: number }>
+  pending: HumanPrompt[]
+  claimed: Array<{ prompt: HumanPrompt; turn: number }>
 }
 
 function historyInboxState(entries: readonly HistoryEntry[]): HistoryInboxState {
@@ -124,20 +131,15 @@ function historyInboxState(entries: readonly HistoryEntry[]): HistoryInboxState 
       const removed = inbox[target].splice(start, removedCount, ...inserted)
       if (outcome === undefined && turn !== undefined) {
         for (const message of removed) {
-          if (message.source.kind === 'user'
-            && message.content.length === 1
-            && message.content[0]?.type === 'text') {
-            claimed.push({ text: message.content[0].text, turn })
-          }
+          const prompt = humanPrompt(message)
+          if (prompt !== undefined) claimed.push({ prompt, turn })
         }
       }
     }
   }
   const pending = [...inbox['next-turn'], ...inbox['next-step']].flatMap((message) => {
-    if (message.source.kind !== 'user' || message.content.length !== 1 || message.content[0]?.type !== 'text') {
-      return []
-    }
-    return [message.content[0].text]
+    const prompt = humanPrompt(message)
+    return prompt === undefined ? [] : [prompt]
   })
   return { pending, claimed }
 }
@@ -392,17 +394,17 @@ export class WebBatchRunner {
 
   private applyQueue(task: BatchTaskRecord, frame: Extract<MuxFrame, { type: 'session/queue' }>): void {
     const direct = frame.items.flatMap((item) => {
-      const text = queuedUserText(item)
-      return text === undefined ? [] : [text]
+      const prompt = queuedUserPrompt(item)
+      return prompt === undefined ? [] : [prompt]
     })
     const current = this.latest(task.position)
-    if (direct.some(text => text !== task.prompt)
+    if (direct.some(input => !ownsPrompt(input, task.prompt))
       || direct.length > 1
       || (current.promptSeq !== undefined && direct.length > 0)) {
       this.fail(this.latest(task.position), { kind: 'session-conflict', message: 'another human prompt is queued' })
       return
     }
-    if (direct.includes(task.prompt)) this.promptQueued.add(task.sessionId)
+    if (direct.some(input => ownsPrompt(input, task.prompt))) this.promptQueued.add(task.sessionId)
     else this.promptQueued.delete(task.sessionId)
   }
 
@@ -413,11 +415,11 @@ export class WebBatchRunner {
       this.openTurn.set(task.sessionId, event.data.turn)
       return
     }
-    const userText = directUserText(event)
-    if (userText !== undefined) {
+    const userPrompt = directUserPrompt(event)
+    if (userPrompt !== undefined) {
       if (current.promptSeq === undefined) {
         const turn = this.openTurn.get(task.sessionId)
-        if (userText !== task.prompt || turn === undefined || this.promptQueued.has(task.sessionId)) {
+        if (!ownsPrompt(userPrompt, task.prompt) || turn === undefined || this.promptQueued.has(task.sessionId)) {
           this.fail(current, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
           return
         }
@@ -448,18 +450,18 @@ export class WebBatchRunner {
 
   private reconcileHistory(task: BatchTaskRecord, entries: readonly HistoryEntry[]): void {
     const inbox = historyInboxState(entries)
-    const humanPrompts = [...inbox.pending, ...inbox.claimed.map(claim => claim.text)]
-    if (humanPrompts.some(text => text !== task.prompt)) {
+    const humanPrompts = [...inbox.pending, ...inbox.claimed.map(claim => claim.prompt)]
+    if (humanPrompts.some(prompt => !ownsPrompt(prompt, task.prompt))) {
       this.fail(this.latest(task.position), { kind: 'session-conflict', message: 'another human prompt entered the Session' })
       return
     }
     const claimedTurns = [...new Set(inbox.claimed.map(claim => claim.turn))]
     const before = this.latest(task.position)
-    const enteredPrompt = entries.some(({ event }) => directUserText(event) !== undefined)
+    const enteredPrompt = entries.some(({ event }) => directUserPrompt(event) !== undefined)
     if (claimedTurns.length > 1
       || (before.turn !== undefined && claimedTurns.length === 1 && claimedTurns[0] !== before.turn)
-      || inbox.pending.filter(text => text === task.prompt).length > 1
-      || (inbox.pending.includes(task.prompt)
+      || inbox.pending.filter(prompt => ownsPrompt(prompt, task.prompt)).length > 1
+      || (inbox.pending.some(prompt => ownsPrompt(prompt, task.prompt))
         && (before.promptSeq !== undefined || claimedTurns.length > 0 || enteredPrompt))) {
       this.fail(before, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
       return
@@ -468,7 +470,7 @@ export class WebBatchRunner {
     if (claimedTurn !== undefined) {
       if (before.turn === undefined) this.commit({ ...before, turn: claimedTurn }, false)
       this.promptClaimed.add(task.sessionId)
-    } else if (inbox.pending.includes(task.prompt)) {
+    } else if (inbox.pending.some(prompt => ownsPrompt(prompt, task.prompt))) {
       this.promptQueued.add(task.sessionId)
     }
 
@@ -477,10 +479,10 @@ export class WebBatchRunner {
       const current = this.latest(task.position)
       if (terminal(current)) return
       if (event.type === 'turn/start') turn = event.data.turn
-      const text = directUserText(event)
-      if (text !== undefined) {
+      const prompt = directUserPrompt(event)
+      if (prompt !== undefined) {
         if (current.promptSeq === undefined) {
-          if (text !== task.prompt || turn === undefined) {
+          if (!ownsPrompt(prompt, task.prompt) || turn === undefined) {
             this.fail(current, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
             return
           }
@@ -523,8 +525,8 @@ export class WebBatchRunner {
         continue
       }
       const prompts = update.frame.items.flatMap((item) => {
-        const text = queuedUserText(item)
-        return text === undefined ? [] : [text]
+        const prompt = queuedUserPrompt(item)
+        return prompt === undefined ? [] : [prompt]
       })
       if (baselineQueuePending && isDeepStrictEqual(prompts, baselinePrompts)) {
         baselineQueuePending = false
