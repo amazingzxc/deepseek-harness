@@ -20,13 +20,13 @@ async function runBuilt(
   args: readonly string[],
   home: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
+  const env: NodeJS.ProcessEnv = { ...process.env, DSH_HOME: home }
+  delete env.NODE_OPTIONS
+  delete env.NODE_NO_WARNINGS
   const result = await execa(process.execPath, [batchBin, ...args], {
     reject: false,
     timeout: 10_000,
-    env: {
-      DSH_HOME: home,
-      NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
-    },
+    env,
   })
   return { stdout: result.stdout, stderr: result.stderr, code: result.exitCode ?? -1 }
 }

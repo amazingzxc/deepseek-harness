@@ -80,7 +80,6 @@ describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip',
         killSignal: 'SIGKILL',
         env: {
           DSH_HOME: join(scaffold.workspaceCwd, '.batch-home'),
-          NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' '),
         },
       })
       child.stdout?.on('data', (chunk: Buffer) => { liveStdout += chunk.toString() })

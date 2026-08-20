@@ -68,7 +68,7 @@ describe.skipIf(!HAS_KEY)('dsh-web-batch real provider smoke', () => {
         reject: false,
         timeout: 180_000,
         killSignal: 'SIGKILL',
-        env: { DSH_HOME: home, NODE_OPTIONS: nodeOptions },
+        env: { DSH_HOME: home },
       })
       expect(result.exitCode, result.stderr).toBe(0)
       const records = result.stdout.split('\n').map(line => JSON.parse(line) as {
