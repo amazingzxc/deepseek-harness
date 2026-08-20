@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Browser, Page } from 'playwright'
 import { chromium } from 'playwright'
-import { execa, type ResultPromise } from 'execa'
+import { execa } from 'execa'
 import { describe, expect, it } from 'vitest'
 import {
   fixtureUserPrompts, launchWebScaffold, webSnapshotMode, type WebScaffold,
@@ -38,12 +38,30 @@ function normalizedNdjson(stdout: string): string {
   })).join('\n')}\n`
 }
 
+function launchBatch(baseUrl: string, manifest: string, home: string) {
+  return execa(process.execPath, [
+    BATCH_BIN,
+    'run',
+    '--url', baseUrl,
+    '--manifest', manifest,
+    '--batch-id', BATCH_ID,
+  ], {
+    reject: false,
+    stripFinalNewline: false,
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
+    env: { DSH_HOME: home },
+  })
+}
+
+type BatchProcess = ReturnType<typeof launchBatch>
+
 describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip', () => {
   it('keeps the browser as interaction owner and completes the same Session', async () => {
     let scaffold: WebScaffold | undefined
     let browser: Browser | undefined
     let page: Page | undefined
-    let child: ResultPromise | undefined
+    let child: BatchProcess | undefined
     let settled: ReturnType<WebScaffold['whenTurnSettled']> | undefined
     let primaryFailure: unknown
     try {
@@ -67,21 +85,11 @@ describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip',
         id: 'question', prompt, cwd: join(scaffold.workspaceCwd, 'workspace'),
       })}\n`)
       let liveStdout = ''
-      child = execa(process.execPath, [
-        BATCH_BIN,
-        'run',
-        '--url', scaffold.baseUrl,
-        '--manifest', manifest,
-        '--batch-id', BATCH_ID,
-      ], {
-        reject: false,
-        stripFinalNewline: false,
-        timeout: 60_000,
-        killSignal: 'SIGKILL',
-        env: {
-          DSH_HOME: join(scaffold.workspaceCwd, '.batch-home'),
-        },
-      })
+      child = launchBatch(
+        scaffold.baseUrl,
+        manifest,
+        join(scaffold.workspaceCwd, '.batch-home'),
+      )
       child.stdout?.on('data', (chunk: Buffer) => { liveStdout += chunk.toString() })
 
       await expect.poll(
@@ -122,7 +130,7 @@ describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip',
       if (page !== undefined) await saveFailureShot(page, 'web-e2e-batch')
       throw error
     } finally {
-      if (child !== undefined && child.exitCode === undefined) child.kill('SIGKILL')
+      if (child !== undefined && child.nodeChildProcess.exitCode === null) child.kill('SIGKILL')
       await child?.catch(() => undefined)
       await settled?.catch(() => undefined)
       await browser?.close()
