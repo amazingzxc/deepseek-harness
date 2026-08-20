@@ -98,6 +98,24 @@ function queuedUserText(item: Extract<MuxFrame, { type: 'session/queue' }>['item
   return message.content[0].text
 }
 
+function historyQueueUserTexts(entries: readonly HistoryEntry[]): string[] {
+  type SpliceEvent = SessionEvent<'agent/inbox/spliced'>
+  type Target = SpliceEvent['data']['target']
+  type Message = SpliceEvent['data']['inserted'][number]
+  const inbox: Record<Target, Message[]> = { 'next-turn': [], 'next-step': [] }
+  for (const { event } of entries) {
+    if (event.type !== 'agent/inbox/spliced') continue
+    const { target, start, removedCount = 0, inserted } = event.data
+    inbox[target].splice(start, removedCount, ...inserted)
+  }
+  return [...inbox['next-turn'], ...inbox['next-step']].flatMap((message) => {
+    if (message.source.kind !== 'user' || message.content.length !== 1 || message.content[0]?.type !== 'text') {
+      return []
+    }
+    return [message.content[0].text]
+  })
+}
+
 function assistantText(event: SessionEvent<'assistant/message'>): string {
   return event.data.message.content
     .filter(block => block.type === 'text')
@@ -277,6 +295,7 @@ export class WebBatchRunner {
       resolve: () => { resolve() },
     }
     this.baselines.set(task.sessionId, baseline)
+    this.promptQueued.delete(task.sessionId)
     const before = task
     const cleared = task.pending.length === 0
       ? task
@@ -387,6 +406,12 @@ export class WebBatchRunner {
         }
       }
       this.applyDurableEvent(this.latest(task.position), event)
+    }
+    const pendingPrompts = historyQueueUserTexts(entries)
+    if (pendingPrompts.some(text => text !== task.prompt)) {
+      this.fail(this.latest(task.position), { kind: 'session-conflict', message: 'another human prompt is queued' })
+    } else if (pendingPrompts.includes(task.prompt)) {
+      this.promptQueued.add(task.sessionId)
     }
   }
 

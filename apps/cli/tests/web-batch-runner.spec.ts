@@ -62,6 +62,7 @@ interface FakeApiOptions {
 class FakeApi {
   readonly histories = new Map<string, HistoryEntry[]>()
   readonly createCalls: string[] = []
+  readonly historyCalls: string[] = []
   readonly promptCalls: string[] = []
   runner?: WebBatchRunner
 
@@ -79,13 +80,16 @@ class FakeApi {
           await this.options.create?.(sessionId, this.createCalls.length)
           return { rpcId: randomUUID() as never, result: { ok: true, value: { sessionId: sessionId as never } } }
         },
-        history: async (payload: { sessionId: string }) => ({
-          rpcId: randomUUID() as never,
-          result: {
-            ok: true as const,
-            value: { events: this.histories.get(payload.sessionId) ?? [], hasMore: false },
-          },
-        }),
+        history: async (payload: { sessionId: string }) => {
+          this.historyCalls.push(payload.sessionId)
+          return {
+            rpcId: randomUUID() as never,
+            result: {
+              ok: true as const,
+              value: { events: this.histories.get(payload.sessionId) ?? [], hasMore: false },
+            },
+          }
+        },
         prompt: async (payload: { sessionId: string; content: Array<{ type: string; text?: string }> }) => {
           const prompt = payload.content[0]?.text ?? ''
           this.promptCalls.push(payload.sessionId)
@@ -224,6 +228,64 @@ describe('WebBatchRunner', () => {
       expect(api.createCalls).toEqual(['session-0', 'session-0', 'session-0'])
       expect(api.promptCalls).toEqual(['session-0'])
       expect(world.runner.currentTasks()[0]?.state).toBe('completed')
+    } finally {
+      world.close()
+    }
+  })
+
+  it('reconstructs a queued prompt from history before a delayed mux baseline arrives', async () => {
+    const api = new FakeApi()
+    api.histories.set('session-0', [{
+      event: sessionEvent('agent/inbox/spliced', 0, {
+        target: 'next-turn',
+        start: 0,
+        inserted: [{
+          id: 'queued-1', role: 'user', content: [{ type: 'text', text: 'prompt-0' }],
+          source: { kind: 'user', rpcId: 'lost-prompt' },
+        }],
+      }),
+    }])
+    const world = await harness(1, 1, api)
+    try {
+      const running = world.runner.run(world.connection, new AbortController().signal)
+      await vi.waitFor(() => { expect(api.historyCalls).toEqual(['session-0']) })
+      await new Promise<void>(resolve => setImmediate(resolve))
+      expect(api.promptCalls).toEqual([])
+      api.runner?.handleMuxEnvelope(mux({
+        type: 'session/queue',
+        sessionId: 'session-0' as never,
+        items: [{
+          id: 'queued-1' as never,
+          placement: 'queued',
+          message: {
+            id: 'queued-1' as never,
+            role: 'user',
+            content: [{ type: 'text', text: 'prompt-0' }],
+            source: { kind: 'user', rpcId: 'lost-prompt' as never },
+          },
+        }],
+      }))
+      api.publish('session-0', [
+        sessionEvent('turn/start', 1, { turn: 1 }),
+        sessionEvent('user/message', 2, {
+          id: 'queued-1', role: 'user', content: [{ type: 'text', text: 'prompt-0' }],
+          source: { kind: 'user', rpcId: 'lost-prompt' },
+        }),
+        sessionEvent('assistant/message', 3, {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'assistant-1', role: 'assistant', content: [{ type: 'text', text: 'done' }],
+            source: { kind: 'model', provider: 'mock', model: 'mock' },
+          },
+        }),
+        sessionEvent('turn/end', 4, { turn: 1, reason: { kind: 'completed' } }),
+      ])
+      await running
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+        state: 'completed', promptSeq: 2, text: 'done',
+      }))
+      expect(api.promptCalls).toEqual([])
     } finally {
       world.close()
     }
