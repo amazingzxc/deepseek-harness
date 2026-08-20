@@ -291,6 +291,31 @@ describe('WebBatchRunner', () => {
     }
   })
 
+  it('keeps the durable turn reason authoritative when a Host error arrives first', async () => {
+    const reason: TurnEndReason = {
+      kind: 'error',
+      error: { code: 'MODEL_FAILED', message: 'provider failed' },
+    }
+    const api = new FakeApi({
+      prompt(sessionId, prompt) {
+        const events = promptEvents(prompt, reason)
+        api.publish(sessionId, events.slice(0, 2))
+        api.runner?.handleHostEnvelope({
+          rpcId: 'host-error' as never,
+          payload: { type: 'host/agent-error', sessionId: sessionId as never, message: 'live provider failure' },
+        })
+        api.publish(sessionId, events.slice(2))
+      },
+    })
+    const world = await harness(1, 1, api)
+    try {
+      await world.runner.run(world.connection, new AbortController().signal)
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({ state: 'failed', reason }))
+    } finally {
+      world.close()
+    }
+  })
+
   it('fails on another human prompt and reconciles Host-restart interruption', async () => {
     const conflictApi = new FakeApi()
     const conflict = await harness(1, 1, conflictApi)

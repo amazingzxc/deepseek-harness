@@ -227,7 +227,7 @@ export class WebBatchRunner {
     if (frame.type === 'host/session-removed') {
       this.fail(task, { kind: 'session-removed' })
     } else if (frame.type === 'host/agent-error') {
-      this.fail(task, { kind: 'host-error', message: frame.message })
+      this.sinks.diagnostic(`task ${task.id}: Host reported an Agent error`, new Error(frame.message))
     }
   }
 
