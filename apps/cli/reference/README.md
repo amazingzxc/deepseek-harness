@@ -2,7 +2,7 @@
 
 English | [中文](README.zh.md)
 
-This reference defines the profile, web-alias, plugin-management, and config-dump command modes. Argv is parsed once through [`src/args.ts`](../src/args.ts), and [`src/bin.ts`](../src/bin.ts) dynamically imports only the selected runner.
+This reference defines the profile, web-alias, plugin-management, config-dump, and Web batch command modes. The `dsh` argv is parsed once through [`src/args.ts`](../src/args.ts), and [`src/bin.ts`](../src/bin.ts) dynamically imports only the selected runner. The separately installed `dsh-web-batch` executable has its own grammar and lifecycle.
 
 ## Profile boot
 
@@ -70,6 +70,62 @@ All modes treat the invoking directory as the default workspace root, load appli
 New sessions default to the `workspace-write` permission preset. Bash and filesystem mutations are restricted to the session workspace and platform temporary roots; reads, network access, and process visibility are not confined. `DSH_PERMISSION_MODE` changes the process fallback. Stored General-settings permissions affect later Web sessions, not an already-open one.
 
 `DSH_TOOLS_MODE` selects `native`, `code`, or `both` for the process; another value fails at boot. The shipped `minimal` agent preset keeps that deployment presentation, fixes the complete system prompt to `You are a helpful software engineer assistant.`, and composes only persistent `bash` plus `str_replace_editor`. Select 极简模式 when creating a Web session; every other prompt section and model-facing plugin remains absent from that agent while the shared browser, workspace, persistence, sandbox, and permission host stays in place.
+
+## Web batch automation
+
+`dsh-web-batch` connects to an already-running `dsh web` Host and never starts, reconfigures, or stops it. `--url` accepts only an HTTP(S) origin without credentials, path, query, or fragment; Web deployment trust and authentication remain properties of that Host.
+
+```text
+dsh-web-batch run --url <origin> --manifest <tasks.jsonl>
+  [--batch-id <uuid>] [--concurrency <positive-int>]
+
+dsh-web-batch resume --url <origin> --batch-id <uuid>
+  [--take-over]
+
+dsh-web-batch status --batch-id <uuid>
+```
+
+`run` creates a batch, generates its UUID when omitted, and fixes concurrency for the lifetime of that batch; the default is `1`. `resume` reconnects non-terminal tasks to the named Host. `status` reads persisted state without a network connection.
+
+### Task manifest
+
+The manifest is JSONL. Every non-empty line is one strict object:
+
+```json
+{"id":"task-1","prompt":"Complete the task","cwd":"/absolute/worktree","agentPreset":"code"}
+```
+
+- `id`, `prompt`, and `cwd` are required; `agentPreset` is optional, and unknown fields are rejected.
+- IDs are unique, prompts are non-empty and cannot begin with `/`, and a multiline prompt uses JSON `\n`.
+- Each cwd must be an existing absolute directory. The loader resolves symlinks and rejects duplicate canonical directories within the batch.
+- The caller owns worktree isolation. The executable does not create, clean, or merge working directories.
+
+Each task receives a preallocated Session ID before the first network request and creates a fresh Web Session with its cwd and optional agent preset. The task's first ordinary prompt owns one root turn. Another ordinary human prompt in that Session is a conflict: the batch task fails locally without cancelling or modifying the Web Session.
+
+### Scheduling and recovery
+
+The fixed concurrency counts every non-terminal task. A task in `waiting-human` retains its slot while questions or approvals are pending; the Web page remains the only answer owner, and the executable only observes requested and resolved frames. Task states are `queued → running ↔ waiting-human → completed|failed|cancelled`.
+
+Batch state lives at `$DSH_HOME/web-batches/<batch-id>/state.sqlite`; directories use mode 0700 and the database uses mode 0600. The SQLite application ID and monotonic schema version reject foreign, unversioned, and incompatible files instead of attempting compatibility recovery.
+
+On resume, the executable calls idempotent `session.create` with the persisted Session ID, reads Session history, and submits the task prompt only when neither history nor the live queue contains it. This reconciliation prevents a lost create or prompt response from creating another Session or durable prompt. A Web transport disconnect reopens both event streams and repeats the same reconciliation. A Host restart follows ordinary Web Session recovery; an interrupted unfinished turn is terminal rather than reconstructed by the batch runner.
+
+One runner owns a batch at a time. An unreleased lock makes `resume` fail; `--take-over` is an operator assertion that the old runner is gone, preserves that abandoned lock as audit evidence, and installs a new owner.
+
+### Output and process lifecycle
+
+stdout contains only version-0 NDJSON. Each `task.state` record is written after its SQLite update commits; stderr contains diagnostics.
+
+```json
+{"version":0,"type":"batch.started","batchId":"...","taskCount":2,"concurrency":1}
+{"version":0,"type":"task.state","batchId":"...","taskId":"task-1","sessionId":"...","state":"waiting-human","pending":["question"]}
+{"version":0,"type":"task.state","batchId":"...","taskId":"task-1","sessionId":"...","state":"completed","pending":[],"reason":{"kind":"completed"},"text":"..."}
+{"version":0,"type":"batch.finished","batchId":"...","counts":{"completed":1,"failed":1,"cancelled":0}}
+```
+
+`resume` and `status` first replay current task states in manifest order. A completed turn maps to `completed`, a user abort maps to `cancelled`, and every other terminal reason maps to `failed`; `text` is the last non-empty assistant message in the owned turn. A fully terminal batch exits 0 only when no task failed or was cancelled, otherwise 1.
+
+SIGINT and SIGTERM stop local scheduling and event streams, retain the last committed task state, release the runner lock, and leave Web Sessions untouched. They exit 130 and 143 respectively; use `resume` to continue the remaining tasks.
 
 ## Shared deployment behavior
 

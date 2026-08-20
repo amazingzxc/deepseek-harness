@@ -15,6 +15,18 @@
 
 运行命令时所在的目录将作为默认 workspace 根目录。`web` 和 `headless` profile 在首次使用时会从随附模板自动初始化；其他任何 profile 都必须通过 `dsh plugin` 创建。
 
+## Web 批处理自动化
+
+该包还会安装独立可执行文件 `dsh-web-batch`，用于通过已运行的 `dsh web` Host 驱动可恢复任务批次。manifest（元数据清单）中的每项任务都会为其独立的绝对工作目录创建一个全新 Web Session；问题与审批仍由 Web 页面处理，可执行文件则以带版本的 NDJSON 报告已提交状态，并可从 `$DSH_HOME/web-batches` 恢复。
+
+```sh
+dsh-web-batch run --url http://127.0.0.1:3080 --manifest ./tasks.jsonl --concurrency 2
+dsh-web-batch resume --url http://127.0.0.1:3080 --batch-id <uuid>
+dsh-web-batch status --batch-id <uuid>
+```
+
+manifest、输出记录、恢复、runner 所有权、信号与退出码的完整约定见 [Web 批处理参考](reference/README.md#web-batch-automation)。
+
 ## 应用参数
 
 启动器只解析自身的 flag，并将其后的所有内容交给已启动的 profile；注入该 profile 的任意应用插件都可以解析这份共享的不可变快照（[`dsh-cmdline`](../../packages/boot/cmdline/README.md)）。因此，启动器的 flag 必须写在最前面；启动器无法识别的第一个 token 标志着应用参数的开始：
