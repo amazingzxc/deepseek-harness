@@ -77,8 +77,9 @@ class FakeApi {
           const sessionId = payload.sessionId as string
           this.createCalls.push(sessionId)
           if (this.options.subscribe?.(sessionId, this.createCalls.length) !== false) {
+            const lastSeq = this.histories.get(sessionId)?.at(-1)?.event.seq ?? -1
             this.runner?.handleMuxEnvelope(mux({
-              type: 'session/subscribed', sessionId: sessionId as never, lastSeq: -1,
+              type: 'session/subscribed', sessionId: sessionId as never, lastSeq,
             }))
           }
           await this.options.create?.(sessionId, this.createCalls.length)
@@ -438,16 +439,70 @@ describe('WebBatchRunner', () => {
     }
   })
 
+  it('does not replay an older queue baseline over a newer history cut', async () => {
+    const inserted = sessionEvent('agent/inbox/spliced', 0, {
+      target: 'next-turn',
+      start: 0,
+      inserted: [{
+        id: 'claimed-1', role: 'user', content: [{ type: 'text', text: 'prompt-0' }],
+        source: { kind: 'user', rpcId: 'lost-prompt' },
+      }],
+    })
+    const api = new FakeApi({
+      history(sessionId) {
+        api.runner?.handleMuxEnvelope(mux({
+          type: 'session/queue',
+          sessionId: sessionId as never,
+          items: [{
+            id: 'claimed-1' as never,
+            placement: 'queued',
+            message: {
+              id: 'claimed-1' as never,
+              role: 'user',
+              content: [{ type: 'text', text: 'prompt-0' }],
+              source: { kind: 'user', rpcId: 'lost-prompt' as never },
+            },
+          }],
+        }))
+        api.publish(sessionId, promptEvents('prompt-0').slice(2).map(event => ({
+          ...event, seq: event.seq + 2, time: event.time + 2,
+        })))
+        return [
+          { event: inserted },
+          { event: sessionEvent('turn/start', 1, { turn: 1 }) },
+          { event: sessionEvent('agent/inbox/spliced', 2, {
+            target: 'next-turn', start: 0, removedCount: 1, inserted: [],
+          }) },
+          { event: sessionEvent('user/message', 3, {
+            id: 'claimed-1', role: 'user', content: [{ type: 'text', text: 'prompt-0' }],
+            source: { kind: 'user', rpcId: 'lost-prompt' },
+          }) },
+        ]
+      },
+    })
+    api.histories.set('session-0', [{ event: inserted }])
+    const world = await harness(1, 1, api)
+    try {
+      await world.runner.run(world.connection, new AbortController().signal)
+      expect(api.promptCalls).toEqual([])
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+        state: 'completed', promptSeq: 3, text: 'done:prompt-0',
+      }))
+    } finally {
+      world.close()
+    }
+  })
+
   it('applies a live queue clear after the older history cut it supersedes', async () => {
     const api = new FakeApi({
       history(sessionId, entries) {
         const stale = [...entries]
-        api.publish(sessionId, [sessionEvent('agent/inbox/spliced', 1, {
-          target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
-        })])
         api.runner?.handleMuxEnvelope(mux({
           type: 'session/queue', sessionId: sessionId as never, items: [],
         }))
+        api.publish(sessionId, [sessionEvent('agent/inbox/spliced', 1, {
+          target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
+        })])
         return stale
       },
       prompt(sessionId, prompt) {

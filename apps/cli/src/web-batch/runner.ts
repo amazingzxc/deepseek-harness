@@ -158,6 +158,7 @@ function terminalState(reason: TurnEndReason): BatchTaskRecord['state'] {
 interface BaselineState {
   settled: Promise<void>
   resolve(): void
+  lastSeq: number
   historyPending: boolean
   updates: Array<
     | { kind: 'event'; event: SessionEvent }
@@ -231,7 +232,7 @@ export class WebBatchRunner {
     if (task === undefined || terminal(task)) return
     switch (frame.type) {
       case 'session/subscribed':
-        this.beginBaseline(task)
+        this.beginBaseline(task, frame.lastSeq)
         break
       case 'session/event': {
         const baseline = this.baselines.get(task.sessionId)
@@ -339,11 +340,12 @@ export class WebBatchRunner {
     return next
   }
 
-  private beginBaseline(task: BatchTaskRecord): void {
+  private beginBaseline(task: BatchTaskRecord, lastSeq: number): void {
     let resolve = (): void => {}
     const baseline: BaselineState = {
       settled: new Promise<void>((done) => { resolve = done }),
       resolve: () => { resolve() },
+      lastSeq,
       historyPending: true,
       updates: [],
     }
@@ -494,12 +496,42 @@ export class WebBatchRunner {
     }
   }
 
-  private finishHistoryBaseline(task: BatchTaskRecord, baseline: BaselineState): void {
+  private finishHistoryBaseline(
+    task: BatchTaskRecord,
+    baseline: BaselineState,
+    entries: readonly HistoryEntry[],
+  ): void {
     if (this.baselines.get(task.sessionId) !== baseline || !baseline.historyPending) return
     baseline.historyPending = false
-    for (const update of baseline.updates.splice(0)) {
-      if (update.kind === 'event') this.applyDurableEvent(this.latest(task.position), update.event)
-      else this.applyQueue(this.latest(task.position), update.frame)
+    const historyLastSeq = entries.at(-1)?.event.seq ?? -1
+    const baselinePrompts = historyInboxState(
+      entries.filter(({ event }) => event.seq <= baseline.lastSeq),
+    ).pending
+    const updates = baseline.updates.splice(0)
+    let baselineQueuePending = true
+    for (const [index, update] of updates.entries()) {
+      if (update.kind === 'event') {
+        if (update.event.seq > historyLastSeq) {
+          this.applyDurableEvent(this.latest(task.position), update.event)
+        }
+        continue
+      }
+      const following = updates[index + 1]
+      if (following?.kind === 'event'
+        && following.event.type === 'agent/inbox/spliced'
+        && following.event.seq <= historyLastSeq) {
+        continue
+      }
+      const prompts = update.frame.items.flatMap((item) => {
+        const text = queuedUserText(item)
+        return text === undefined ? [] : [text]
+      })
+      if (baselineQueuePending && isDeepStrictEqual(prompts, baselinePrompts)) {
+        baselineQueuePending = false
+        continue
+      }
+      baselineQueuePending = false
+      this.applyQueue(this.latest(task.position), update.frame)
     }
   }
 
@@ -532,7 +564,7 @@ export class WebBatchRunner {
         if (history === undefined) break
         this.reconcileHistory(task, history)
         if (this.baselines.get(task.sessionId) !== baseline) continue
-        this.finishHistoryBaseline(task, baseline)
+        this.finishHistoryBaseline(task, baseline, history)
         const reconciled = this.latest(position)
         if (terminal(reconciled)) break
         if (reconciled.promptSeq === undefined
