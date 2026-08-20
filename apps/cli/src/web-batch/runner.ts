@@ -98,22 +98,48 @@ function queuedUserText(item: Extract<MuxFrame, { type: 'session/queue' }>['item
   return message.content[0].text
 }
 
-function historyQueueUserTexts(entries: readonly HistoryEntry[]): string[] {
+interface HistoryInboxState {
+  pending: string[]
+  claimed: Array<{ text: string; turn: number }>
+}
+
+function historyInboxState(entries: readonly HistoryEntry[]): HistoryInboxState {
   type SpliceEvent = SessionEvent<'agent/inbox/spliced'>
   type Target = SpliceEvent['data']['target']
   type Message = SpliceEvent['data']['inserted'][number]
   const inbox: Record<Target, Message[]> = { 'next-turn': [], 'next-step': [] }
+  const claimed: HistoryInboxState['claimed'] = []
+  let turn: number | undefined
   for (const { event } of entries) {
-    if (event.type !== 'agent/inbox/spliced') continue
-    const { target, start, removedCount = 0, inserted } = event.data
-    inbox[target].splice(start, removedCount, ...inserted)
+    if (event.type === 'turn/start') {
+      turn = event.data.turn
+      continue
+    }
+    if (event.type === 'turn/end') {
+      if (event.data.turn === turn) turn = undefined
+      continue
+    }
+    if (event.type === 'agent/inbox/spliced') {
+      const { target, start, removedCount = 0, inserted, outcome } = event.data
+      const removed = inbox[target].splice(start, removedCount, ...inserted)
+      if (outcome === undefined && turn !== undefined) {
+        for (const message of removed) {
+          if (message.source.kind === 'user'
+            && message.content.length === 1
+            && message.content[0]?.type === 'text') {
+            claimed.push({ text: message.content[0].text, turn })
+          }
+        }
+      }
+    }
   }
-  return [...inbox['next-turn'], ...inbox['next-step']].flatMap((message) => {
+  const pending = [...inbox['next-turn'], ...inbox['next-step']].flatMap((message) => {
     if (message.source.kind !== 'user' || message.content.length !== 1 || message.content[0]?.type !== 'text') {
       return []
     }
     return [message.content[0].text]
   })
+  return { pending, claimed }
 }
 
 function assistantText(event: SessionEvent<'assistant/message'>): string {
@@ -405,6 +431,28 @@ export class WebBatchRunner {
   }
 
   private reconcileHistory(task: BatchTaskRecord, entries: readonly HistoryEntry[]): void {
+    const inbox = historyInboxState(entries)
+    const humanPrompts = [...inbox.pending, ...inbox.claimed.map(claim => claim.text)]
+    if (humanPrompts.some(text => text !== task.prompt)) {
+      this.fail(this.latest(task.position), { kind: 'session-conflict', message: 'another human prompt entered the Session' })
+      return
+    }
+    const claimedTurns = [...new Set(inbox.claimed.map(claim => claim.turn))]
+    const before = this.latest(task.position)
+    if (claimedTurns.length > 1
+      || (before.turn !== undefined && claimedTurns.length === 1 && claimedTurns[0] !== before.turn)
+      || (before.promptSeq !== undefined && inbox.pending.includes(task.prompt))) {
+      this.fail(before, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
+      return
+    }
+    const claimedTurn = claimedTurns[0]
+    if (claimedTurn !== undefined) {
+      if (before.turn === undefined) this.commit({ ...before, turn: claimedTurn }, false)
+      this.promptQueued.add(task.sessionId)
+    } else if (inbox.pending.includes(task.prompt)) {
+      this.promptQueued.add(task.sessionId)
+    }
+
     let turn: number | undefined
     for (const { event } of entries) {
       const current = this.latest(task.position)
@@ -425,12 +473,6 @@ export class WebBatchRunner {
         }
       }
       this.applyDurableEvent(this.latest(task.position), event)
-    }
-    const pendingPrompts = historyQueueUserTexts(entries)
-    if (pendingPrompts.some(text => text !== task.prompt)) {
-      this.fail(this.latest(task.position), { kind: 'session-conflict', message: 'another human prompt is queued' })
-    } else if (pendingPrompts.includes(task.prompt)) {
-      this.promptQueued.add(task.sessionId)
     }
   }
 

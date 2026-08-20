@@ -302,6 +302,58 @@ describe('WebBatchRunner', () => {
     }
   })
 
+  it('does not resubmit a prompt claimed before its user message was durable', async () => {
+    const api = new FakeApi()
+    api.histories.set('session-0', [
+      {
+        event: sessionEvent('agent/inbox/spliced', 0, {
+          target: 'next-turn',
+          start: 0,
+          inserted: [{
+            id: 'claimed-1', role: 'user', content: [{ type: 'text', text: 'prompt-0' }],
+            source: { kind: 'user', rpcId: 'lost-prompt' },
+          }],
+        }),
+      },
+      { event: sessionEvent('turn/start', 1, { turn: 1 }) },
+      {
+        event: sessionEvent('agent/inbox/spliced', 2, {
+          target: 'next-turn', start: 0, removedCount: 1, inserted: [],
+        }),
+      },
+    ])
+    const world = await harness(1, 1, api)
+    try {
+      const running = world.runner.run(world.connection, new AbortController().signal)
+      await vi.waitFor(() => { expect(api.historyCalls).toEqual(['session-0']) })
+      expect(api.promptCalls).toEqual([])
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({ turn: 1 }))
+
+      api.publish('session-0', [
+        sessionEvent('user/message', 3, {
+          id: 'claimed-1', role: 'user', content: [{ type: 'text', text: 'prompt-0' }],
+          source: { kind: 'user', rpcId: 'lost-prompt' },
+        }),
+        sessionEvent('assistant/message', 4, {
+          turn: 1,
+          step: 1,
+          message: {
+            id: 'assistant-1', role: 'assistant', content: [{ type: 'text', text: 'done' }],
+            source: { kind: 'model', provider: 'mock', model: 'mock' },
+          },
+        }),
+        sessionEvent('turn/end', 5, { turn: 1, reason: { kind: 'completed' } }),
+      ])
+      await running
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+        state: 'completed', promptSeq: 3, text: 'done',
+      }))
+      expect(api.promptCalls).toEqual([])
+    } finally {
+      world.close()
+    }
+  })
+
   it('keeps the durable turn reason authoritative when a Host error arrives first', async () => {
     const reason: TurnEndReason = {
       kind: 'error',
