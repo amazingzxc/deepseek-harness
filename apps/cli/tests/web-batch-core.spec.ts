@@ -91,13 +91,15 @@ describe('task manifest', () => {
       ['[]', 'line 1: task must be'],
       [JSON.stringify({ id: 'a', prompt: 'p', cwd, extra: true }), 'unknown field'],
       [JSON.stringify({ id: '', prompt: 'p', cwd }), 'id must'],
-      [[{ id: 'a', prompt: 'p', cwd }, { id: 'a', prompt: 'q', cwd: root }].map(JSON.stringify).join('\n'), 'duplicate id'],
+      [[{ id: 'a', prompt: 'p', cwd }, { id: 'a', prompt: 'q', cwd: root }]
+        .map(value => JSON.stringify(value)).join('\n'), 'duplicate id'],
       [JSON.stringify({ id: 'a', prompt: ' ', cwd }), 'prompt must'],
       [JSON.stringify({ id: 'a', prompt: '/compact', cwd }), 'must not start'],
       [JSON.stringify({ id: 'a', prompt: 'p', cwd: 'relative' }), 'absolute directory'],
       [JSON.stringify({ id: 'a', prompt: 'p', cwd: join(root, 'missing') }), 'absolute directory'],
       [JSON.stringify({ id: 'a', prompt: 'p', cwd, agentPreset: '' }), 'agentPreset'],
-      [[{ id: 'a', prompt: 'p', cwd }, { id: 'b', prompt: 'q', cwd }].map(JSON.stringify).join('\n'), 'duplicate canonical cwd'],
+      [[{ id: 'a', prompt: 'p', cwd }, { id: 'b', prompt: 'q', cwd }]
+        .map(value => JSON.stringify(value)).join('\n'), 'duplicate canonical cwd'],
     ]
     for (const [contents, message] of cases) {
       const path = join(root, `${randomUUID()}.jsonl`)

@@ -54,6 +54,8 @@ export interface BatchTaskRecord extends BatchTaskInput {
   reason?: unknown
   /** Last non-empty assistant text in the owned turn. */
   text?: string
+  /** Sequence number of the assistant message that supplied {@link text}. */
+  textSeq?: number
 }
 
 /** A runner-lock audit row. */

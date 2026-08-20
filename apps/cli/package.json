@@ -12,7 +12,8 @@
   },
   "type": "module",
   "bin": {
-    "dsh": "lib/bin.js"
+    "dsh": "lib/bin.js",
+    "dsh-web-batch": "lib/web-batch-bin.js"
   },
   "files": [
     "lib/*.js",

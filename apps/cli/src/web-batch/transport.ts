@@ -135,6 +135,8 @@ export interface BatchConnectionSinks {
   onMuxEnvelope(envelope: RpcRequest<MuxFrame>): void
   /** Receive one validated Host envelope. */
   onHostEnvelope(envelope: RpcRequest<HostFrame>): void
+  /** Observe each generation after both streams and unary RPC are reachable. */
+  onConnected?(): void
   /** Receive contained transport and sink diagnostics. */
   onDiagnostic(message: string, error?: unknown): void
 }
@@ -238,6 +240,11 @@ export class BatchConnection {
             generationEnded.then(() => { throw new Error('event stream ended during connection handshake') }),
           ])
           attempt = 0
+          try {
+            this.sinks.onConnected?.()
+          } catch (error) {
+            this.diagnose('connection sink failed', error)
+          }
           if (!this.ready) {
             this.ready = true
             this.resolveReady?.()

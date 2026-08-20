@@ -40,6 +40,7 @@ interface TaskRow {
   turn_number: number | null
   reason_json: string | null
   final_text: string | null
+  text_seq: number | null
 }
 
 interface LockRow {
@@ -110,6 +111,7 @@ function openDatabase(path: string): DatabaseSync {
         turn_number INTEGER,
         reason_json TEXT,
         final_text TEXT,
+        text_seq INTEGER,
         PRIMARY KEY (batch_id, position),
         UNIQUE (batch_id, task_id),
         UNIQUE (batch_id, cwd),
@@ -162,6 +164,7 @@ function taskFromRow(row: TaskRow): BatchTaskRecord {
     ...row.turn_number === null ? {} : { turn: row.turn_number },
     ...row.reason_json === null ? {} : { reason: JSON.parse(row.reason_json) as unknown },
     ...row.final_text === null ? {} : { text: row.final_text },
+    ...row.text_seq === null ? {} : { textSeq: row.text_seq },
   }
 }
 
@@ -256,7 +259,7 @@ export class WebBatchStore {
   tasks(): BatchTaskRecord[] {
     return (this.db.prepare(
       `SELECT position, task_id, prompt, cwd, agent_preset, session_id, state, pending_json,
-        prompt_seq, turn_number, reason_json, final_text
+        prompt_seq, turn_number, reason_json, final_text, text_seq
       FROM tasks WHERE batch_id = ? ORDER BY position`,
     ).all(this.batchId) as unknown as TaskRow[]).map(taskFromRow)
   }
@@ -318,7 +321,7 @@ export class WebBatchStore {
   /** Replace every mutable task field in one committed update. */
   updateTask(task: BatchTaskRecord): void {
     const result = this.db.prepare(`
-      UPDATE tasks SET state = ?, pending_json = ?, prompt_seq = ?, turn_number = ?, reason_json = ?, final_text = ?
+      UPDATE tasks SET state = ?, pending_json = ?, prompt_seq = ?, turn_number = ?, reason_json = ?, final_text = ?, text_seq = ?
       WHERE batch_id = ? AND position = ? AND task_id = ? AND session_id = ?
     `).run(
       task.state,
@@ -327,6 +330,7 @@ export class WebBatchStore {
       task.turn ?? null,
       task.reason === undefined ? null : JSON.stringify(task.reason),
       task.text ?? null,
+      task.textSeq ?? null,
       this.batchId,
       task.position,
       task.id,

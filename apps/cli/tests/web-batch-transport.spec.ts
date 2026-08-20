@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import type { HostFrame, IApiClient, MuxFrame, RpcRequest } from '@deepseek-ai/dsh-host-apiproxy'
+import { RpcId, type HostFrame, type IApiClient, type MuxFrame, type RpcRequest } from '@deepseek-ai/dsh-host-apiproxy'
 import { WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BatchConnection, NodeWebApiClient } from '../src/web-batch/transport.ts'
@@ -109,11 +109,11 @@ describe('BatchConnection', () => {
     let releaseSecond = (): void => {}
     const secondDone = new Promise<void>((resolve) => { releaseSecond = resolve })
     const muxFrames: RpcRequest<MuxFrame>[][] = [[], [{
-      rpcId: 'mux-2',
+      rpcId: RpcId('mux-2'),
       payload: { type: 'session/subscribed', sessionId: 'session-1' as never, lastSeq: -1 },
     }]]
     const hostFrames: RpcRequest<HostFrame>[][] = [[], [{
-      rpcId: 'host-2',
+      rpcId: RpcId('host-2'),
       payload: { type: 'host/session-status', sessionId: 'session-1' as never, running: true },
     }]]
     const api = {
