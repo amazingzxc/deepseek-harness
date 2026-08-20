@@ -276,6 +276,9 @@ describe('WebBatchRunner', () => {
           },
         }],
       }))
+      api.runner?.handleMuxEnvelope(mux({
+        type: 'session/queue', sessionId: 'session-0' as never, items: [],
+      }))
       api.publish('session-0', [
         sessionEvent('turn/start', 1, { turn: 1 }),
         sessionEvent('user/message', 2, {
@@ -374,6 +377,39 @@ describe('WebBatchRunner', () => {
     try {
       await world.runner.run(world.connection, new AbortController().signal)
       expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({ state: 'failed', reason }))
+    } finally {
+      world.close()
+    }
+  })
+
+  it('fails when an identical second human prompt remains queued', async () => {
+    const api = new FakeApi({
+      prompt(sessionId, prompt) {
+        api.publish(sessionId, [sessionEvent('turn/start', 0, { turn: 1 })])
+        api.runner?.handleMuxEnvelope(mux({
+          type: 'session/queue',
+          sessionId: sessionId as never,
+          items: [{
+            id: 'duplicate-1' as never,
+            placement: 'queued',
+            message: {
+              id: 'duplicate-1' as never,
+              role: 'user',
+              content: [{ type: 'text', text: prompt }],
+              source: { kind: 'user', rpcId: 'duplicate-rpc' as never },
+            },
+          }],
+        }))
+        api.publish(sessionId, promptEvents(prompt).slice(1))
+      },
+    })
+    const world = await harness(1, 1, api)
+    try {
+      await world.runner.run(world.connection, new AbortController().signal)
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+        state: 'failed',
+        reason: { kind: 'session-conflict', message: 'another human prompt entered the Session' },
+      }))
     } finally {
       world.close()
     }

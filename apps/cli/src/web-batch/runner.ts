@@ -169,6 +169,7 @@ export class WebBatchRunner {
   private readonly terminalWaiters = new Map<number, Set<() => void>>()
   private readonly openTurn = new Map<string, number>()
   private readonly promptQueued = new Set<string>()
+  private readonly promptClaimed = new Set<string>()
   private readonly baselines = new Map<string, BaselineState>()
   private connectionEpoch = 0
   private connectionWaiters = new Set<() => void>()
@@ -206,6 +207,7 @@ export class WebBatchRunner {
   /** Discard per-stream baselines before a new connection generation starts. */
   handleGenerationStarting(): void {
     this.promptQueued.clear()
+    this.promptClaimed.clear()
     for (const baseline of this.baselines.values()) baseline.resolve()
     this.baselines.clear()
   }
@@ -340,6 +342,7 @@ export class WebBatchRunner {
     }
     this.baselines.set(task.sessionId, baseline)
     this.promptQueued.delete(task.sessionId)
+    this.promptClaimed.delete(task.sessionId)
     const before = task
     const cleared = task.pending.length === 0
       ? task
@@ -383,7 +386,10 @@ export class WebBatchRunner {
       const text = queuedUserText(item)
       return text === undefined ? [] : [text]
     })
-    if (direct.some(text => text !== task.prompt)) {
+    const current = this.latest(task.position)
+    if (direct.some(text => text !== task.prompt)
+      || direct.length > 1
+      || (current.promptSeq !== undefined && direct.length > 0)) {
       this.fail(this.latest(task.position), { kind: 'session-conflict', message: 'another human prompt is queued' })
       return
     }
@@ -402,12 +408,13 @@ export class WebBatchRunner {
     if (userText !== undefined) {
       if (current.promptSeq === undefined) {
         const turn = this.openTurn.get(task.sessionId)
-        if (userText !== task.prompt || turn === undefined) {
+        if (userText !== task.prompt || turn === undefined || this.promptQueued.has(task.sessionId)) {
           this.fail(current, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
           return
         }
         current = this.commit({ ...current, promptSeq: event.seq, turn }, false)
         this.promptQueued.delete(task.sessionId)
+        this.promptClaimed.delete(task.sessionId)
       } else if (event.seq !== current.promptSeq) {
         this.fail(current, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
         return
@@ -439,16 +446,19 @@ export class WebBatchRunner {
     }
     const claimedTurns = [...new Set(inbox.claimed.map(claim => claim.turn))]
     const before = this.latest(task.position)
+    const enteredPrompt = entries.some(({ event }) => directUserText(event) !== undefined)
     if (claimedTurns.length > 1
       || (before.turn !== undefined && claimedTurns.length === 1 && claimedTurns[0] !== before.turn)
-      || (before.promptSeq !== undefined && inbox.pending.includes(task.prompt))) {
+      || inbox.pending.filter(text => text === task.prompt).length > 1
+      || (inbox.pending.includes(task.prompt)
+        && (before.promptSeq !== undefined || claimedTurns.length > 0 || enteredPrompt))) {
       this.fail(before, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
       return
     }
     const claimedTurn = claimedTurns[0]
     if (claimedTurn !== undefined) {
       if (before.turn === undefined) this.commit({ ...before, turn: claimedTurn }, false)
-      this.promptQueued.add(task.sessionId)
+      this.promptClaimed.add(task.sessionId)
     } else if (inbox.pending.includes(task.prompt)) {
       this.promptQueued.add(task.sessionId)
     }
@@ -467,6 +477,7 @@ export class WebBatchRunner {
           }
           this.commit({ ...current, promptSeq: event.seq, turn }, false)
           this.promptQueued.delete(task.sessionId)
+          this.promptClaimed.delete(task.sessionId)
         } else if (event.seq !== current.promptSeq) {
           this.fail(current, { kind: 'session-conflict', message: 'another human prompt entered the Session' })
           return
@@ -516,7 +527,9 @@ export class WebBatchRunner {
         this.finishHistoryBaseline(task, baseline)
         const reconciled = this.latest(position)
         if (terminal(reconciled)) break
-        if (reconciled.promptSeq === undefined && !this.promptQueued.has(reconciled.sessionId)) {
+        if (reconciled.promptSeq === undefined
+          && !this.promptQueued.has(reconciled.sessionId)
+          && !this.promptClaimed.has(reconciled.sessionId)) {
           const prompted = await this.api.sessions.prompt({
             sessionId: reconciled.sessionId as never,
             mode: 'queue',
