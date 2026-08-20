@@ -438,6 +438,49 @@ describe('WebBatchRunner', () => {
     }
   })
 
+  it('applies a live queue clear after the older history cut it supersedes', async () => {
+    const api = new FakeApi({
+      history(sessionId, entries) {
+        const stale = [...entries]
+        api.publish(sessionId, [sessionEvent('agent/inbox/spliced', 1, {
+          target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
+        })])
+        api.runner?.handleMuxEnvelope(mux({
+          type: 'session/queue', sessionId: sessionId as never, items: [],
+        }))
+        return stale
+      },
+      prompt(sessionId, prompt) {
+        api.publish(sessionId, promptEvents(prompt).map(event => ({
+          ...event, seq: event.seq + 2, time: event.time + 2,
+        })))
+      },
+    })
+    api.histories.set('session-0', [{
+      event: sessionEvent('agent/inbox/spliced', 0, {
+        target: 'next-turn',
+        start: 0,
+        inserted: [{
+          id: 'stale-queued', role: 'user', content: [{ type: 'text', text: 'prompt-0' }],
+          source: { kind: 'user', rpcId: 'stale-rpc' },
+        }],
+      }),
+    }])
+    const world = await harness(1, 1, api)
+    const abort = new AbortController()
+    const timeout = setTimeout(() => { abort.abort() }, 500)
+    try {
+      await world.runner.run(world.connection, abort.signal)
+      expect(api.promptCalls).toEqual(['session-0'])
+      expect(world.runner.currentTasks()[0]).toEqual(expect.objectContaining({
+        state: 'completed', promptSeq: 3, text: 'done:prompt-0',
+      }))
+    } finally {
+      clearTimeout(timeout)
+      world.close()
+    }
+  })
+
   it('waits for the current generation baseline before reconnect reconciliation', async () => {
     const api = new FakeApi({
       subscribe(_sessionId, calls) {

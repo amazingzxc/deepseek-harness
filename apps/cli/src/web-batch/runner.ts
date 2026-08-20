@@ -159,7 +159,10 @@ interface BaselineState {
   settled: Promise<void>
   resolve(): void
   historyPending: boolean
-  events: SessionEvent[]
+  updates: Array<
+    | { kind: 'event'; event: SessionEvent }
+    | { kind: 'queue'; frame: Extract<MuxFrame, { type: 'session/queue' }> }
+  >
 }
 
 /** Scheduler state machine over one opened {@link WebBatchStore}. */
@@ -233,7 +236,7 @@ export class WebBatchRunner {
       case 'session/event': {
         const baseline = this.baselines.get(task.sessionId)
         if (baseline?.historyPending === true) {
-          baseline.events.push(frame.event)
+          baseline.updates.push({ kind: 'event', event: frame.event })
         } else {
           this.applyDurableEvent(task, frame.event)
         }
@@ -252,7 +255,11 @@ export class WebBatchRunner {
         this.removePending(task, 'question', frame.questionRpcId)
         break
       case 'session/queue':
-        this.applyQueue(task, frame)
+        if (this.baselines.get(task.sessionId)?.historyPending === true) {
+          this.baselines.get(task.sessionId)?.updates.push({ kind: 'queue', frame })
+        } else {
+          this.applyQueue(task, frame)
+        }
         break
       case 'session/jobs':
       case 'session/projection':
@@ -338,7 +345,7 @@ export class WebBatchRunner {
       settled: new Promise<void>((done) => { resolve = done }),
       resolve: () => { resolve() },
       historyPending: true,
-      events: [],
+      updates: [],
     }
     this.baselines.set(task.sessionId, baseline)
     this.promptQueued.delete(task.sessionId)
@@ -490,8 +497,9 @@ export class WebBatchRunner {
   private finishHistoryBaseline(task: BatchTaskRecord, baseline: BaselineState): void {
     if (this.baselines.get(task.sessionId) !== baseline || !baseline.historyPending) return
     baseline.historyPending = false
-    for (const event of baseline.events.splice(0)) {
-      this.applyDurableEvent(this.latest(task.position), event)
+    for (const update of baseline.updates.splice(0)) {
+      if (update.kind === 'event') this.applyDurableEvent(this.latest(task.position), update.event)
+      else this.applyQueue(this.latest(task.position), update.frame)
     }
   }
 
