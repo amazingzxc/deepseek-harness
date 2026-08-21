@@ -37,7 +37,7 @@ describe('NodeWebApiClient', () => {
           rpcId: 'fixed',
           result: {
             ok: true,
-            value: { version: '1', cwd: '/work', attachedSessions: 0, canOpenPath: false },
+            value: { version: '1', cwd: '/work', home: '/home', attachedSessions: 0, canOpenPath: false },
           },
         }))
         return
