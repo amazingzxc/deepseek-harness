@@ -2,7 +2,7 @@
 
 [English](README.md) | 中文
 
-本参考定义 profile 启动、web 别名、插件管理和配置 dump 等命令模式。argv 由 [`src/args.ts`](../src/args.ts) 统一解析一次，[`src/bin.ts`](../src/bin.ts) 只会动态导入选中的运行器。
+本参考定义 profile 启动、web 别名、插件管理、配置 dump 和 Web 批处理等命令模式。`dsh` 的 argv 由 [`src/args.ts`](../src/args.ts) 统一解析一次，[`src/bin.ts`](../src/bin.ts) 只会动态导入选中的运行器。单独安装的 `dsh-web-batch` 可执行文件有自己的语法与生命周期。
 
 ## Profile 启动
 
@@ -83,6 +83,62 @@ dsh web --help
 新会话默认使用 `workspace-write` 权限预设。Bash 和文件系统修改仅限于会话 workspace 与平台临时根目录；读取、网络访问和进程可见性不受限制。`DSH_PERMISSION_MODE` 更改进程后备值。General settings 中存储的权限影响后续 Web 会话，不改变已打开的会话。
 
 `DSH_TOOLS_MODE` 为进程选择 `native`、`code` 或 `both`；其他值会导致启动失败。随附的 `minimal` agent preset 会保留该部署的呈现方式，将完整系统提示词固定为 `You are a helpful software engineer assistant.`，并且仅组合持久 `bash` 和 `str_replace_editor`。创建 Web 会话时请选择极简模式；该 agent 不包含任何其他提示词段落或面向模型的插件，而共享的浏览器、workspace、持久化、沙箱与权限宿主保持不变。
+
+## Web 批处理自动化
+
+`dsh-web-batch` 连接已运行的 `dsh web` Host，并且不会启动、重新配置或停止该 Host。`--url` 只接受不含凭据、path、query 或 fragment 的 HTTP(S) origin；Web 部署的信任与身份验证仍由该 Host 负责。
+
+```text
+dsh-web-batch run --url <origin> --manifest <tasks.jsonl>
+  [--batch-id <uuid>] [--concurrency <positive-int>]
+
+dsh-web-batch resume --url <origin> --batch-id <uuid>
+  [--take-over]
+
+dsh-web-batch status --batch-id <uuid>
+```
+
+`run` 创建批次，在未提供 UUID 时生成 UUID，并为该批次的整个生命周期固定并发度；默认值为 `1`。`resume` 将非终态任务重新连接到指定 Host。`status` 无需网络连接即可读取持久状态。
+
+### 任务 manifest
+
+manifest 使用 JSONL。每个非空行都是一个严格对象：
+
+```json
+{"id":"task-1","prompt":"Complete the task","cwd":"/absolute/worktree","agentPreset":"code"}
+```
+
+- `id`、`prompt` 和 `cwd` 必填；`agentPreset` 可选，未知字段会被拒绝。
+- ID 必须唯一，prompt 必须非空且不能以 `/` 开头；多行 prompt 使用 JSON `\n`。
+- 每个 cwd 必须是已存在的绝对目录。加载器会解析符号链接，并拒绝批次内重复的规范目录。
+- 调用方负责 worktree 隔离。可执行文件不会创建、清理或合并工作目录。
+
+每项任务在首次网络请求前都会获得预分配的 Session ID，并以其 cwd 和可选 agent preset 创建一个全新 Web Session。任务的第一条普通 prompt 拥有一个 root turn。该 Session 中出现另一条普通人工 prompt 时即发生冲突：批次任务在本地失败，但不会取消或修改 Web Session。
+
+### 调度与恢复
+
+固定并发度会计入每项非终态任务。问题或审批待处理时，处于 `waiting-human` 的任务仍占用其 slot；Web 页面仍是唯一回答方，可执行文件只观察 requested 与 resolved frame。任务状态为 `queued → running ↔ waiting-human → completed|failed|cancelled`。
+
+批次状态位于 `$DSH_HOME/web-batches/<batch-id>/state.sqlite`；目录使用 0700 mode，数据库使用 0600 mode。SQLite application ID 与单调 schema version 会拒绝外来、无版本或不兼容文件，而不会尝试兼容恢复。
+
+恢复时，可执行文件使用已持久化的 Session ID 调用幂等 `session.create`、读取 Session history，并且只在 history 与实时 queue 都不含任务 prompt 时提交该 prompt。这项对账可防止 create 或 prompt 响应丢失后产生另一个 Session 或持久 prompt。Web transport 断开时会重新打开两条事件流并重复同一对账。Host 重启遵循普通 Web Session 恢复语义；未完成的中断 turn 会进入终态，而不会由批处理 runner 重建。
+
+同一批次一次只能由一个 runner 持有。存在未释放的锁时，`resume` 会失败；`--take-over` 表示操作者确认旧 runner 已结束，它会保留被遗弃的锁作为审计证据，并安装新的所有者。
+
+### 输出与进程生命周期
+
+stdout 只包含 version 0 的 NDJSON。每条 `task.state` 记录都在其 SQLite 更新提交后写出；stderr 只包含诊断。
+
+```json
+{"version":0,"type":"batch.started","batchId":"...","taskCount":2,"concurrency":1}
+{"version":0,"type":"task.state","batchId":"...","taskId":"task-1","sessionId":"...","state":"waiting-human","pending":["question"]}
+{"version":0,"type":"task.state","batchId":"...","taskId":"task-1","sessionId":"...","state":"completed","pending":[],"reason":{"kind":"completed"},"text":"..."}
+{"version":0,"type":"batch.finished","batchId":"...","counts":{"completed":1,"failed":1,"cancelled":0}}
+```
+
+`resume` 与 `status` 会先按 manifest 顺序重放当前任务状态。完成的 turn 映射为 `completed`，用户 abort 映射为 `cancelled`，其他所有终态原因映射为 `failed`；`text` 是所属 turn 中最后一条非空 assistant 消息。批次完全进入终态后，只有没有任务失败或取消时才以 0 退出，否则以 1 退出。
+
+SIGINT 与 SIGTERM 会停止本地调度和事件流、保留最后一次已提交的任务状态、释放 runner 锁，并保持 Web Session 不变。对应退出码分别为 130 和 143；使用 `resume` 可继续剩余任务。
 
 ## 共享部署行为
 
