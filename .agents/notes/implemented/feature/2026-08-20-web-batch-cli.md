@@ -12,13 +12,13 @@ The batch process can fail after sending a create or prompt request but before r
 
 ## Decision
 
-The `@deepseek-ai/dsh` package installs a second independently bundled executable, `dsh-web-batch`. It is an application-level ApiProxy client of an already-running `dsh web` Host, following the existing [application and transport layering](../architecture/2026-07-19-gui-layering-and-rpc-protocol.md). It does not mount plugins, start a Host, alter Agent Loop, add Web RPC methods, or reuse the [direct headless entry](../architecture/2026-08-09-headless-direct-core-entry-point.md).
+The `@deepseek-ai/dsh` package exposes `dsh web-batch` through the [single application launcher](../architecture/2026-08-22-single-dsh-application-launcher.md). The lazily loaded subcommand is an application-level Typert Remote client of an already-running `dsh web` Host, following the existing [Gateway method protocol](../architecture/2026-08-02-typert-remote-method-calls.md) and [Remote event delivery](../architecture/2026-08-10-remote-event-delivery.md). It does not mount plugins, start a Host, alter Agent Loop, add Web Remote methods, or reuse the [direct headless entry](../architecture/2026-08-09-headless-direct-core-entry-point.md).
 
 Each strict JSONL manifest task has its own canonical absolute cwd and receives a fresh preallocated Session ID. The runner persists that identity before network access, calls idempotent `session.create`, reconciles `session.history` and the live queue, and submits the task prompt only when neither contains it. The first ordinary prompt owns one root turn; a later ordinary human prompt is treated as a local ownership conflict without mutating the Session.
 
 Batch state is a private SQLite database under `$DSH_HOME/web-batches/<batch-id>`. Its application ID and monotonic schema version reject incompatible files. A durable runner lock prevents concurrent execution; explicit `--take-over` preserves the abandoned owner as audit history.
 
-The Node carrier subclasses `AbstractApiClient`: unary calls use HTTP, while mux and Host downlinks use the Web product's WebSocket routes and public schemas. Both streams reconnect as one generation; every generation repeats Session creation and history reconciliation before task progress continues.
+The Node carrier exchanges the complete authenticated URL printed by `dsh web` for an authority-bound browser-session cookie. Unary Remote calls use HTTP, while Session and forwarded-event streams use the Gateway Remote mux. Both stream groups reconnect as one generation; every generation repeats Session creation and history reconciliation before task progress continues.
 
 Questions and approvals remain browser-owned. Requested frames move a task to `waiting-human`, resolved frames return it to `running`, and the non-terminal task retains its concurrency slot. The runner never sends an interaction response. A completed turn succeeds, a user abort cancels, and every other terminal reason fails; the last non-empty assistant message in the owned turn becomes the task text.
 
@@ -26,7 +26,7 @@ stdout is a versioned NDJSON protocol emitted only after SQLite commits. SIGINT 
 
 ## Alternatives considered
 
-**Extend the headless runner with batch and interaction support.** Rejected because headless deliberately mounts no Host, HTTP server, ApiProxy, or browser. Adding those responsibilities would erase the direct-core distinction and create another Web composition.
+**Extend the headless runner with batch and interaction support.** Rejected because headless deliberately mounts no Host, HTTP server, Gateway, or browser. Adding those responsibilities would erase the direct-core distinction and create another Web composition.
 
 **Add batch RPC methods and Host-side batch persistence.** Rejected because the existing Session API and event streams already provide creation, prompt durability, interaction observation, and recovery. Batch scheduling is caller-owned automation state and does not belong in the Session log or model-visible request.
 
@@ -36,7 +36,7 @@ stdout is a versioned NDJSON protocol emitted only after SQLite commits. SIGINT 
 
 ## Consequences
 
-Operators gain resumable parallel automation whose tasks remain ordinary inspectable Web Sessions, and no new model-visible input or session event exists. Recovery relies on public ApiProxy behavior and durable Session history instead of a second execution engine.
+Operators gain resumable parallel automation whose tasks remain ordinary inspectable Web Sessions, and no new model-visible input or session event exists. Recovery relies on public Remote behavior and durable Session history instead of a second execution engine.
 
 The Web Host must already be reachable, and the caller must provide isolated working directories. Pending interactions need a live browser, `waiting-human` can hold all slots indefinitely, and a Host restart terminates unfinished turns under existing Session recovery rather than reconstructing forms. Batch databases intentionally have no compatibility promise before release.
 

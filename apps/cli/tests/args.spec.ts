@@ -57,6 +57,14 @@ describe('parseDshArgs', () => {
       .toEqual({ mode: 'plugin', profile: 'tui', args: ['add', '--save-dev', 'x'] })
   })
 
+  it('routes Web batch arguments through the sole launcher', () => {
+    expect(parse(['web-batch', 'run', '--url', 'http://localhost/?token=x', '--manifest', 'tasks.jsonl']))
+      .toEqual({
+        mode: 'web-batch',
+        args: ['run', '--url', 'http://localhost/?token=x', '--manifest', 'tasks.jsonl'],
+      })
+  })
+
   it('routes profile and web config dumps', () => {
     expect(parse(['--profile', 'web', '--dump-config']))
       .toEqual({ mode: 'dump-config', profile: 'web', defaultOnly: false, patches: [] })
@@ -96,6 +104,7 @@ describe('parseDshArgs', () => {
     expect(exitCode(['plugin', '--profile', 'tui'])).toBe(1) // nothing to forward
     expect(exitCode(['plugin', '--profile', ''])).toBe(1)
     expect(exitCode(['--profile', 'x', 'plugin', 'add', 'y'])).toBe(1)
+    expect(exitCode(['--profile', 'x', 'web-batch', 'status', '--batch-id', 'x'])).toBe(1)
   })
 
   it('keeps its own help for an invocation with no app to hand it to', () => {

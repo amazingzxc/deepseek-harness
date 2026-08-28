@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { IApiClient } from '@deepseek-ai/dsh-host-apiproxy'
+import type { IApiClient } from '../src/web-batch/transport.ts'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runWebBatchCommand } from '../src/web-batch/command.ts'
 import { WebBatchStore } from '../src/web-batch/store.ts'
@@ -76,7 +76,7 @@ describe('runWebBatchCommand', () => {
     let stopped = 0
     const output = capture()
     const execution = runWebBatchCommand({
-      mode: 'run', origin: 'http://127.0.0.1:1', manifest, batchId, concurrency: 1,
+      mode: 'run', launchUrl: 'http://127.0.0.1:1/?token=test', manifest, batchId, concurrency: 1,
     }, {
       home,
       io: output.io,

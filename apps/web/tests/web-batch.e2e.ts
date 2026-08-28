@@ -1,5 +1,5 @@
 // Web e2e scenario: the published batch executable creates a Session through
-// ApiProxy, while the resident browser remains the sole owner of answering a
+// Gateway Remote, while the resident browser remains the sole owner of answering a
 // blocking question. The checked NDJSON is the automation-facing transcript.
 import { existsSync } from 'node:fs'
 import { readFile, writeFile } from 'node:fs/promises'
@@ -15,9 +15,9 @@ import {
 import { connectFreshWorkspace, newEnglishPage, saveFailureShot } from './support.ts'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
-const BATCH_BIN = join(REPO_ROOT, 'apps/cli/lib/web-batch-bin.js')
-const FIXTURE = fileURLToPath(new URL('./snapshots/question-composer/session.jsonl', import.meta.url))
-const EXPECTED = fileURLToPath(new URL('./snapshots/web-batch/cli.expected.jsonl', import.meta.url))
+const DSH_BIN = join(REPO_ROOT, 'apps/cli/lib/bin.js')
+const FIXTURE = fileURLToPath(new URL('../../../snapshots/web/question-composer/session.jsonl', import.meta.url))
+const EXPECTED = fileURLToPath(new URL('../../../snapshots/web/web-batch/cli.expected.jsonl', import.meta.url))
 const BATCH_ID = '123e4567-e89b-42d3-a456-426614174000'
 const MODE = webSnapshotMode()
 
@@ -40,7 +40,8 @@ function normalizedNdjson(stdout: string): string {
 
 function launchBatch(baseUrl: string, manifest: string, home: string) {
   return execa(process.execPath, [
-    BATCH_BIN,
+    DSH_BIN,
+    'web-batch',
     'run',
     '--url', baseUrl,
     '--manifest', manifest,
@@ -56,7 +57,7 @@ function launchBatch(baseUrl: string, manifest: string, home: string) {
 
 type BatchProcess = ReturnType<typeof launchBatch>
 
-describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip', () => {
+describe.skipIf(MODE === 'record')('web e2e: dsh web-batch question round trip', () => {
   it('keeps the browser as interaction owner and completes the same Session', async () => {
     let scaffold: WebScaffold | undefined
     let browser: Browser | undefined
@@ -65,7 +66,7 @@ describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip',
     let settled: ReturnType<WebScaffold['whenTurnSettled']> | undefined
     let primaryFailure: unknown
     try {
-      expect(existsSync(BATCH_BIN), 'run pnpm run build before Web e2e').toBe(true)
+      expect(existsSync(DSH_BIN), 'run pnpm run build before Web e2e').toBe(true)
       const prompts = fixtureUserPrompts(await readFile(FIXTURE, 'utf8'))
       expect(prompts).toHaveLength(1)
       const prompt = prompts[0]
@@ -74,7 +75,7 @@ describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip',
       scaffold = await launchWebScaffold({ replayFixture: FIXTURE, paceMs: 15 })
       browser = await chromium.launch()
       page = await newEnglishPage(browser)
-      await page.goto(scaffold.baseUrl, { waitUntil: 'load' })
+      await page.goto(scaffold.authenticatedUrl, { waitUntil: 'load' })
       await page.waitForSelector('[class*="frame"]', { timeout: 30_000 })
       await connectFreshWorkspace(page, scaffold.workspaceCwd)
       const treeItems = page.locator('[role="treeitem"]')
@@ -86,7 +87,7 @@ describe.skipIf(MODE === 'record')('web e2e: dsh-web-batch question round trip',
       })}\n`)
       let liveStdout = ''
       child = launchBatch(
-        scaffold.baseUrl,
+        scaffold.authenticatedUrl,
         manifest,
         join(scaffold.workspaceCwd, '.batch-home'),
       )

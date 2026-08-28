@@ -5,7 +5,7 @@ import { Command, CommanderError } from 'commander'
 /** Start a new batch from a JSONL manifest. */
 interface RunBatchInvocation {
   mode: 'run'
-  origin: string
+  launchUrl: string
   manifest: string
   batchId?: string
   concurrency: number
@@ -14,7 +14,7 @@ interface RunBatchInvocation {
 /** Resume a persisted non-terminal batch. */
 interface ResumeBatchInvocation {
   mode: 'resume'
-  origin: string
+  launchUrl: string
   batchId: string
   takeOver: boolean
 }
@@ -28,23 +28,24 @@ interface StatusBatchInvocation {
 /** Resolved dsh-web-batch invocation. */
 export type WebBatchInvocation = RunBatchInvocation | ResumeBatchInvocation | StatusBatchInvocation
 
-/** Validate and canonicalize an HTTP(S) origin accepted by the Web carrier. */
-export function parseWebOrigin(value: string): string {
+/** Validate and canonicalize the authenticated URL printed by `dsh web`. */
+export function parseWebLaunchUrl(value: string): string {
   let url: URL
   try {
     url = new URL(value)
   } catch {
-    throw new Error('--url must be an HTTP(S) origin')
+    throw new Error('--url must be the complete HTTP(S) URL printed by dsh web')
   }
   if ((url.protocol !== 'http:' && url.protocol !== 'https:')
     || url.username !== ''
     || url.password !== ''
     || url.pathname !== '/'
-    || url.search !== ''
-    || url.hash !== '') {
-    throw new Error('--url must be an HTTP(S) origin without credentials, path, query, or fragment')
+    || url.hash !== ''
+    || url.searchParams.size !== 1
+    || !/^[A-Za-z0-9_-]+$/u.test(url.searchParams.get('token') ?? '')) {
+    throw new Error('--url must be the complete HTTP(S) root URL with one token query printed by dsh web')
   }
-  return url.origin
+  return url.href
 }
 
 /** Parse a positive integer option. */
@@ -72,21 +73,21 @@ export function parseBatchId(value: string): string {
 export function parseWebBatchArgs(argv: readonly string[], version: string): WebBatchInvocation {
   let resolved: WebBatchInvocation | undefined
   const program = new Command()
-    .name('dsh-web-batch')
+    .name('dsh web-batch')
     .description('Drive recoverable task batches through an already-running dsh web host.')
     .version(version, '-V, --version', 'output the version number')
     .showHelpAfterError()
     .exitOverride()
 
   program.command('run')
-    .requiredOption('--url <origin>', 'HTTP(S) origin of the running dsh web host')
+    .requiredOption('--url <launch-url>', 'complete authenticated URL printed by dsh web')
     .requiredOption('--manifest <path>', 'JSONL task manifest')
     .option('--batch-id <uuid>', 'batch identity (generated when omitted)')
     .option('--concurrency <positive-int>', 'fixed concurrency', '1')
     .action((options: { url: string; manifest: string; batchId?: string; concurrency: string }) => {
       resolved = {
         mode: 'run',
-        origin: parseWebOrigin(options.url),
+        launchUrl: parseWebLaunchUrl(options.url),
         manifest: options.manifest,
         ...options.batchId === undefined ? {} : { batchId: parseBatchId(options.batchId) },
         concurrency: parsePositiveInteger(options.concurrency),
@@ -94,13 +95,13 @@ export function parseWebBatchArgs(argv: readonly string[], version: string): Web
     })
 
   program.command('resume')
-    .requiredOption('--url <origin>', 'HTTP(S) origin of the running dsh web host')
+    .requiredOption('--url <launch-url>', 'complete authenticated URL printed by dsh web')
     .requiredOption('--batch-id <uuid>', 'batch identity')
     .option('--take-over', 'replace an abandoned runner lock while preserving it')
     .action((options: { url: string; batchId: string; takeOver?: boolean }) => {
       resolved = {
         mode: 'resume',
-        origin: parseWebOrigin(options.url),
+        launchUrl: parseWebLaunchUrl(options.url),
         batchId: parseBatchId(options.batchId),
         takeOver: options.takeOver === true,
       }

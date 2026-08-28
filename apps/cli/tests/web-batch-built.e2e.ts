@@ -8,7 +8,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { WebBatchStore } from '../src/web-batch/store.ts'
 
 const repoRoot = fileURLToPath(new URL('../../../', import.meta.url))
-const batchBin = join(repoRoot, 'apps/cli/lib/web-batch-bin.js')
+const dshBin = join(repoRoot, 'apps/cli/lib/bin.js')
 const cliVersion = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
 const cleanup: string[] = []
 
@@ -23,7 +23,7 @@ async function runBuilt(
   const env: NodeJS.ProcessEnv = { ...process.env, DSH_HOME: home }
   delete env.NODE_OPTIONS
   delete env.NODE_NO_WARNINGS
-  const result = await execa(process.execPath, [batchBin, ...args], {
+  const result = await execa(process.execPath, [dshBin, 'web-batch', ...args], {
     reject: false,
     timeout: 10_000,
     env,
@@ -31,8 +31,8 @@ async function runBuilt(
   return { stdout: result.stdout, stderr: result.stderr, code: result.exitCode ?? -1 }
 }
 
-describe.skipIf(!existsSync(batchBin))('dsh-web-batch built bin', () => {
-  it('runs under plain Node and publishes both package bins', async () => {
+describe.skipIf(!existsSync(dshBin))('dsh web-batch built command', () => {
+  it('runs under plain Node through the sole package bin', async () => {
     const home = await mkdtemp(join(tmpdir(), 'dsh-web-batch-built-'))
     cleanup.push(home)
     const version = await runBuilt(['--version'], home)
@@ -40,7 +40,7 @@ describe.skipIf(!existsSync(batchBin))('dsh-web-batch built bin', () => {
     const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as {
       bin: Record<string, string>
     }
-    expect(manifest.bin).toEqual({ dsh: 'lib/bin.js', 'dsh-web-batch': 'lib/web-batch-bin.js' })
+    expect(manifest.bin).toEqual({ dsh: 'lib/bin.js' })
   })
 
   it('prints version-0 status NDJSON from the persisted SQLite database', async () => {
@@ -73,7 +73,7 @@ describe.skipIf(!existsSync(batchBin))('dsh-web-batch built bin', () => {
     cleanup.push(home)
     const manifest = join(home, 'tasks.jsonl')
     await writeFile(manifest, '{\n')
-    const result = await runBuilt(['run', '--url', 'http://127.0.0.1:1', '--manifest', manifest], home)
+    const result = await runBuilt(['run', '--url', 'http://127.0.0.1:1/?token=test', '--manifest', manifest], home)
     expect(result.code).toBe(1)
     expect(result.stdout).toBe('')
     expect(result.stderr).toContain('manifest line 1: invalid JSON')

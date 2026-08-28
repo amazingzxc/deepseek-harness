@@ -1,7 +1,7 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { RpcId, type HostFrame, type IApiClient, type MuxFrame, type RpcRequest } from '@deepseek-ai/dsh-host-apiproxy'
-import { WebSocketServer } from 'ws'
+import type { HostFrame, IApiClient, MuxFrame, RpcRequest } from '../src/web-batch/transport.ts'
+import { type RawData, WebSocketServer } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { BatchConnection, NodeWebApiClient } from '../src/web-batch/transport.ts'
 
@@ -24,66 +24,92 @@ async function listen(server: Server): Promise<string> {
   return `http://127.0.0.1:${String(address.port)}`
 }
 
+function rawDataText(data: RawData): string {
+  if (Array.isArray(data)) return Buffer.concat(data).toString('utf8')
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8')
+  return data.toString('utf8')
+}
+
 describe('NodeWebApiClient', () => {
-  it('uses the configured origin for unary requests and rejects redirects', async () => {
+  it('exchanges the launch token, sends authenticated unary requests, and rejects redirects', async () => {
     const seen: string[] = []
     const server = createServer((request, response) => {
       seen.push(request.url ?? '')
-      if (request.url === '/api/host.describe') {
+      if (request.url === '/?token=test') {
         request.resume()
-        response.writeHead(200, { 'content-type': 'application/json' })
-        response.end(JSON.stringify({
-          type: 'server-response',
-          rpcId: 'fixed',
-          result: {
-            ok: true,
-            value: { version: '1', cwd: '/work', home: '/home', attachedSessions: 0, canOpenPath: false },
-          },
-        }))
+        response.writeHead(303, { location: '/', 'set-cookie': 'dsh=test; HttpOnly' })
+        response.end()
+        return
+      }
+      if (request.url === '/api/session/create') {
+        let body = ''
+        request.on('data', (chunk: Buffer | string) => {
+          body += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+        })
+        request.on('end', () => {
+          const envelope = JSON.parse(body) as { rpcId: string }
+          response.writeHead(200, { 'content-type': 'application/json' })
+          response.end(JSON.stringify({
+            type: 'server-response',
+            rpcId: envelope.rpcId,
+            result: { ok: true, value: { sessionId: 'session-1' } },
+          }))
+        })
         return
       }
       response.writeHead(302, { location: 'http://127.0.0.1:1/leak' })
       response.end()
     })
     const origin = await listen(server)
-    class FixedClient extends NodeWebApiClient {
-      protected override mintRpcId() { return 'fixed' as never }
-    }
-    const client = new FixedClient(origin)
-    const described = await client.host.describe({})
-    expect(described.result.ok).toBe(true)
-    await expect(client.sessions.list({})).rejects.toThrow()
-    expect(seen).toEqual(['/api/host.describe', '/api/session.list'])
+    const client = new NodeWebApiClient(`${origin}/?token=test`)
+    const created = await client.sessions.create({})
+    expect(created.result).toEqual({ ok: true, value: { sessionId: 'session-1' } })
+    await expect(client.sessions.prompt({
+      sessionId: 'session-1', mode: 'queue', content: [{ type: 'text', text: 'x' }],
+    })).rejects.toThrow()
+    expect(seen).toEqual(['/?token=test', '/api/session/create', '/api/session/prompt'])
   })
 
-  it('parses WebSocket frames, drops malformed frames, and closes on abort', async () => {
-    const server = createServer()
+  it('maps Remote host events and closes the stream on abort', async () => {
+    const server = createServer((request, response) => {
+      if (request.url === '/?token=test') {
+        response.writeHead(303, { location: '/', 'set-cookie': 'dsh=test; HttpOnly' })
+        response.end()
+        return
+      }
+      response.writeHead(404)
+      response.end()
+    })
     const sockets = new WebSocketServer({ noServer: true })
     server.on('upgrade', (request, socket, head) => {
       sockets.handleUpgrade(request, socket, head, (websocket) => {
-        websocket.send('not-json')
-        websocket.send(JSON.stringify({
-          type: 'server-request',
-          rpcId: 'host-1',
-          method: 'host/session-status',
-          payload: { type: 'host/session-status', sessionId: 'session-1', running: true },
-        }))
+        websocket.on('message', (raw) => {
+          const opened = JSON.parse(rawDataText(raw)) as { type: string; streamId: string; endpoint?: string }
+          if (opened.type !== 'open') return
+          expect(opened.endpoint).toBe('$events')
+          websocket.send(JSON.stringify({ type: 'item', streamId: opened.streamId, value: {
+            type: 'ready', clientId: 'client-1', host: { home: '/home' },
+          } }))
+          websocket.send(JSON.stringify({ type: 'item', streamId: 'unrelated', value: null }))
+          websocket.send(JSON.stringify({ type: 'item', streamId: opened.streamId, value: {
+            type: 'emit', event: 'api-session/status', args: ['session-1', true],
+          } }))
+        })
       })
     })
     const origin = await listen(server)
-    const diagnostics = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
-    const client = new NodeWebApiClient(origin)
+    const client = new NodeWebApiClient(`${origin}/?token=test`)
     const abort = new AbortController()
     const frames: RpcRequest<HostFrame>[] = []
     for await (const frame of client.events.host({}, abort.signal)) {
       frames.push(frame)
       abort.abort()
     }
-    expect(frames).toEqual([{
-      rpcId: 'host-1', payload: { type: 'host/session-status', sessionId: 'session-1', running: true },
-    }])
-    expect(diagnostics).toHaveBeenCalledWith(expect.stringContaining('dropping malformed WebSocket frame'))
-    sockets.close()
+    expect(frames).toEqual([expect.objectContaining({
+      payload: { type: 'host/session-status', sessionId: 'session-1', running: true },
+    })])
+    for (const socket of sockets.clients) socket.terminate()
+    await new Promise<void>((resolve) => { sockets.close(() => { resolve() }) })
   })
 })
 
@@ -124,7 +150,7 @@ describe('BatchConnection', () => {
     const api = {
       host: {
         describe: async () => ({
-          rpcId: 'describe' as never,
+          rpcId: 'describe',
           result: {
             ok: true as const,
             value: { version: '1', cwd: '/work', attachedSessions: 0, canOpenPath: false },
@@ -162,17 +188,17 @@ describe('BatchConnection', () => {
     let releaseSecond = (): void => {}
     const secondDone = new Promise<void>((resolve) => { releaseSecond = resolve })
     const muxFrames: RpcRequest<MuxFrame>[][] = [[], [{
-      rpcId: RpcId('mux-2'),
-      payload: { type: 'session/subscribed', sessionId: 'session-1' as never, lastSeq: -1 },
+      rpcId: 'mux-2',
+      payload: { type: 'session/subscribed', sessionId: 'session-1', lastSeq: -1 },
     }]]
     const hostFrames: RpcRequest<HostFrame>[][] = [[], [{
-      rpcId: RpcId('host-2'),
-      payload: { type: 'host/session-status', sessionId: 'session-1' as never, running: true },
+      rpcId: 'host-2',
+      payload: { type: 'host/session-status', sessionId: 'session-1', running: true },
     }]]
     const api = {
       host: {
         describe: async () => ({
-          rpcId: 'describe' as never,
+          rpcId: 'describe',
           result: {
             ok: true as const,
             value: { version: '1', cwd: '/work', attachedSessions: 0, canOpenPath: false },
@@ -219,7 +245,7 @@ describe('BatchConnection', () => {
     const api = {
       host: {
         describe: async () => ({
-          rpcId: 'describe' as never,
+          rpcId: 'describe',
           result: {
             ok: true as const,
             value: { version: '1', cwd: '/work', attachedSessions: 0, canOpenPath: false },

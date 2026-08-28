@@ -44,8 +44,15 @@ interface PluginInvocation {
   args: string[]
 }
 
+/** Run Web batch automation through the existing Web Host. */
+interface WebBatchInvocation {
+  mode: 'web-batch'
+  /** Arguments parsed by the lazily loaded Web batch command. */
+  args: string[]
+}
+
 /** The resolved `dsh` invocation. Help, version, and errors exit inside {@link parseDshArgs}. */
-export type DshInvocation = ProfileInvocation | DumpConfigInvocation | PluginInvocation
+export type DshInvocation = ProfileInvocation | DumpConfigInvocation | PluginInvocation | WebBatchInvocation
 
 /** Launcher flags shared by the default command and the `web` alias. */
 interface BootOptions {
@@ -69,6 +76,7 @@ Examples:
   dsh --profile tui --resume <session>       arguments after the launcher flags reach the app
   dsh --profile web --help                   the web app's own flags and help
   dsh plugin --profile tui add <package>     install a plugin into the tui profile
+  dsh web-batch run --url <url> --manifest <path>  run recoverable Web tasks
 `
 
 /**
@@ -178,6 +186,17 @@ export function parseDshArgs(argv: readonly string[], version: string): DshInvoc
       if (options.profile === '') program.error('error: --profile needs a name')
       if (args.length === 0) program.error('error: plugin needs pnpm arguments to forward (e.g. add <package>)')
       resolved = { mode: 'plugin', profile: options.profile, args }
+    })
+
+  const webBatch = program.command('web-batch').description('drive recoverable task batches through an already-running dsh web host')
+  webBatch
+    .helpOption(false)
+    .allowUnknownOption()
+    .passThroughOptions()
+    .argument('[args...]', 'arguments for Web batch automation')
+    .action((args: string[]) => {
+      rejectParentOptions('web-batch')
+      resolved = { mode: 'web-batch', args }
     })
 
   try {

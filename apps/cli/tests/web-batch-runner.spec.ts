@@ -7,7 +7,7 @@ import type {
   IApiClient,
   MuxFrame,
   RpcRequest,
-} from '@deepseek-ai/dsh-host-apiproxy'
+} from '../src/web-batch/transport.ts'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session/types'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BatchOutput } from '../src/web-batch/output.ts'
@@ -51,7 +51,7 @@ function promptEvents(prompt: string, reason: TurnEndReason = { kind: 'completed
 }
 
 function mux(payload: MuxFrame, rpcId: string = randomUUID()): RpcRequest<MuxFrame> {
-  return { rpcId: rpcId as never, payload }
+  return { rpcId: rpcId, payload }
 }
 
 interface FakeApiOptions {
@@ -79,11 +79,11 @@ class FakeApi {
           if (this.options.subscribe?.(sessionId, this.createCalls.length) !== false) {
             const lastSeq = this.histories.get(sessionId)?.at(-1)?.event.seq ?? -1
             this.runner?.handleMuxEnvelope(mux({
-              type: 'session/subscribed', sessionId: sessionId as never, lastSeq,
+              type: 'session/subscribed', sessionId: sessionId, lastSeq,
             }))
           }
           await this.options.create?.(sessionId, this.createCalls.length)
-          return { rpcId: randomUUID() as never, result: { ok: true, value: { sessionId: sessionId as never } } }
+          return { rpcId: randomUUID(), result: { ok: true, value: { sessionId: sessionId } } }
         },
         history: async (payload: { sessionId: string }) => {
           this.historyCalls.push(payload.sessionId)
@@ -92,7 +92,7 @@ class FakeApi {
             ? entries
             : await this.options.history(payload.sessionId, entries)
           return {
-            rpcId: randomUUID() as never,
+            rpcId: randomUUID(),
             result: {
               ok: true as const,
               value: { events: [...resolved], hasMore: false },
@@ -103,7 +103,7 @@ class FakeApi {
           const prompt = payload.content[0]?.text ?? ''
           this.promptCalls.push(payload.sessionId)
           await this.options.prompt?.(payload.sessionId, prompt, this.promptCalls.length)
-          return { rpcId: randomUUID() as never, result: { ok: true as const, value: { accepted: true as const } } }
+          return { rpcId: randomUUID(), result: { ok: true as const, value: { accepted: true as const } } }
         },
       },
     } as unknown as IApiClient
@@ -111,7 +111,7 @@ class FakeApi {
 
   publish(sessionId: string, events: readonly SessionEvent[]): void {
     for (const event of events) {
-      this.runner?.handleMuxEnvelope(mux({ type: 'session/event', sessionId: sessionId as never, event }))
+      this.runner?.handleMuxEnvelope(mux({ type: 'session/event', sessionId: sessionId, event }))
     }
   }
 }
@@ -183,7 +183,7 @@ describe('WebBatchRunner', () => {
         if (sessionId === 'session-0') {
           api.publish(sessionId, promptEvents(prompt).slice(0, 2))
           api.runner?.handleMuxEnvelope(mux({
-            type: 'question/requested', sessionId: sessionId as never,
+            type: 'question/requested', sessionId: sessionId,
             questions: [{ id: 'q', question: 'Choose?' }],
           }, 'question-rpc'))
           return
@@ -199,19 +199,19 @@ describe('WebBatchRunner', () => {
       })
       expect(api.createCalls).toEqual(['session-0'])
       const duplicate = mux({
-        type: 'question/requested', sessionId: 'session-0' as never,
+        type: 'question/requested', sessionId: 'session-0',
         questions: [{ id: 'q', question: 'Choose?' }],
       }, 'question-rpc')
       const outputCount = world.outputs.length
       world.runner.handleMuxEnvelope(duplicate)
       expect(world.outputs).toHaveLength(outputCount)
       world.runner.handleMuxEnvelope(mux({
-        type: 'question/resolved', sessionId: 'session-0' as never,
-        questionRpcId: 'question-rpc' as never, outcome: 'answered',
+        type: 'question/resolved', sessionId: 'session-0',
+        questionRpcId: 'question-rpc',
       }))
       world.runner.handleMuxEnvelope(mux({
-        type: 'question/resolved', sessionId: 'session-0' as never,
-        questionRpcId: 'question-rpc' as never, outcome: 'answered',
+        type: 'question/resolved', sessionId: 'session-0',
+        questionRpcId: 'question-rpc',
       }))
       api.publish('session-0', promptEvents('prompt-0').slice(2))
       await running
@@ -265,20 +265,20 @@ describe('WebBatchRunner', () => {
       expect(api.promptCalls).toEqual([])
       api.runner?.handleMuxEnvelope(mux({
         type: 'session/queue',
-        sessionId: 'session-0' as never,
+        sessionId: 'session-0',
         items: [{
-          id: 'queued-1' as never,
+          id: 'queued-1',
           placement: 'queued',
           message: {
-            id: 'queued-1' as never,
+            id: 'queued-1',
             role: 'user',
             content: [{ type: 'text', text: 'prompt-0' }],
-            source: { kind: 'user', rpcId: 'lost-prompt' as never },
+            source: { kind: 'user', rpcId: 'lost-prompt' },
           },
         }],
       }))
       api.runner?.handleMuxEnvelope(mux({
-        type: 'session/queue', sessionId: 'session-0' as never, items: [],
+        type: 'session/queue', sessionId: 'session-0', items: [],
       }))
       api.publish('session-0', [
         sessionEvent('turn/start', 1, { turn: 1 }),
@@ -368,8 +368,8 @@ describe('WebBatchRunner', () => {
         const events = promptEvents(prompt, reason)
         api.publish(sessionId, events.slice(0, 2))
         api.runner?.handleHostEnvelope({
-          rpcId: 'host-error' as never,
-          payload: { type: 'host/agent-error', sessionId: sessionId as never, message: 'live provider failure' },
+          rpcId: 'host-error',
+          payload: { type: 'host/agent-error', sessionId: sessionId, message: 'live provider failure' },
         })
         api.publish(sessionId, events.slice(2))
       },
@@ -389,15 +389,15 @@ describe('WebBatchRunner', () => {
         api.publish(sessionId, [sessionEvent('turn/start', 0, { turn: 1 })])
         api.runner?.handleMuxEnvelope(mux({
           type: 'session/queue',
-          sessionId: sessionId as never,
+          sessionId: sessionId,
           items: [{
-            id: 'duplicate-1' as never,
+            id: 'duplicate-1',
             placement: 'queued',
             message: {
-              id: 'duplicate-1' as never,
+              id: 'duplicate-1',
               role: 'user',
               content: [{ type: 'text', text: prompt }],
-              source: { kind: 'user', rpcId: 'duplicate-rpc' as never },
+              source: { kind: 'user', rpcId: 'duplicate-rpc' },
             },
           }],
         }))
@@ -423,14 +423,14 @@ describe('WebBatchRunner', () => {
         prompt(sessionId, prompt) {
           api.publish(sessionId, [sessionEvent('turn/start', 0, { turn: 1 })])
           const message = {
-            id: 'rich-1' as never,
+            id: 'rich-1',
             role: 'user' as const,
             content: [
               { type: 'text' as const, text: prompt },
               {
                 type: 'image' as const,
                 attachment: {
-                  attachmentId: 'attachment-1' as never,
+                  attachmentId: 'attachment-1',
                   mediaType: 'image/png' as const,
                   bytes: 1,
                   width: 1,
@@ -438,12 +438,12 @@ describe('WebBatchRunner', () => {
                 },
               },
             ],
-            source: { kind: 'user' as const, rpcId: 'rich-rpc' as never },
+            source: { kind: 'user' as const, rpcId: 'rich-rpc' },
           }
           if (stream === 'queue') {
             api.runner?.handleMuxEnvelope(mux({
               type: 'session/queue',
-              sessionId: sessionId as never,
+              sessionId: sessionId,
               items: [{ id: message.id, placement: 'queued', message }],
             }))
           } else {
@@ -505,15 +505,15 @@ describe('WebBatchRunner', () => {
       history(sessionId) {
         api.runner?.handleMuxEnvelope(mux({
           type: 'session/queue',
-          sessionId: sessionId as never,
+          sessionId: sessionId,
           items: [{
-            id: 'claimed-1' as never,
+            id: 'claimed-1',
             placement: 'queued',
             message: {
-              id: 'claimed-1' as never,
+              id: 'claimed-1',
               role: 'user',
               content: [{ type: 'text', text: 'prompt-0' }],
-              source: { kind: 'user', rpcId: 'lost-prompt' as never },
+              source: { kind: 'user', rpcId: 'lost-prompt' },
             },
           }],
         }))
@@ -551,7 +551,7 @@ describe('WebBatchRunner', () => {
       history(sessionId, entries) {
         const stale = [...entries]
         api.runner?.handleMuxEnvelope(mux({
-          type: 'session/queue', sessionId: sessionId as never, items: [],
+          type: 'session/queue', sessionId: sessionId, items: [],
         }))
         api.publish(sessionId, [sessionEvent('agent/inbox/spliced', 1, {
           target: 'next-turn', start: 0, removedCount: 1, inserted: [], outcome: 'canceled',
@@ -617,7 +617,7 @@ describe('WebBatchRunner', () => {
       expect(api.historyCalls).toHaveLength(1)
 
       world.runner.handleMuxEnvelope(mux({
-        type: 'session/subscribed', sessionId: 'session-0' as never, lastSeq: 1,
+        type: 'session/subscribed', sessionId: 'session-0', lastSeq: 1,
       }))
       await running
       expect(api.historyCalls).toHaveLength(2)

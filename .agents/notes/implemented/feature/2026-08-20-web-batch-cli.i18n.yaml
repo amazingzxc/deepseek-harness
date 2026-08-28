@@ -2,5 +2,5 @@
 # side as of the last confirmed-consistent state. Both languages carry equal authority;
 # after editing either side, bring the other along and re-record with:
 #   pnpm run verify-translation-pairing --write .agents/notes/implemented/feature/2026-08-20-web-batch-cli.md
-2026-08-20-web-batch-cli.md: 0f72c3bdc45ac0eb3637904ddfdd73f570a74753
-2026-08-20-web-batch-cli.zh.md: e881aa246dcdaaab1e0757db4d4bbc3131c1720d
+2026-08-20-web-batch-cli.md: ba79ac96095434ca48b2c9148a40e099dae8d0a8
+2026-08-20-web-batch-cli.zh.md: 467279e3db48e2c9e2a9fd4e28b45669ad021f62

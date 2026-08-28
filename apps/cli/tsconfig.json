@@ -33,13 +33,13 @@
       "path": "../../packages/bundle/web-app"
     },
     {
-      "path": "../../packages/host/apiproxy"
-    },
-    {
       "path": "../../packages/host/webserver"
     },
     {
       "path": "../../packages/host/frontend-static"
+    },
+    {
+      "path": "../../packages/api/session-controller/tsconfig.host.json"
     },
     {
       "path": "../../packages/core/session"
@@ -64,6 +64,9 @@
     },
     {
       "path": "../../packages/session-query/session-query-sqlite"
+    },
+    {
+      "path": "../../packages/session-query/session-query"
     },
     {
       "path": "../../packages/shell/shell-env"

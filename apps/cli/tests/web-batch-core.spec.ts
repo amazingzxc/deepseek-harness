@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, mkdtemp, stat, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, realpath, stat, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
-import { parseBatchId, parsePositiveInteger, parseWebBatchArgs, parseWebOrigin } from '../src/web-batch/args.ts'
+import { parseBatchId, parsePositiveInteger, parseWebBatchArgs, parseWebLaunchUrl } from '../src/web-batch/args.ts'
 import { loadTaskManifest } from '../src/web-batch/manifest.ts'
 import {
   BatchLockedError,
@@ -30,32 +30,32 @@ afterEach(async () => {
 describe('dsh-web-batch arguments', () => {
   it('parses every command and canonicalizes values', () => {
     const id = randomUUID()
-    expect(parseWebBatchArgs(['run', '--url', 'http://localhost:3141', '--manifest', 'tasks.jsonl'], '1'))
-      .toEqual({ mode: 'run', origin: 'http://localhost:3141', manifest: 'tasks.jsonl', concurrency: 1 })
+    expect(parseWebBatchArgs(['run', '--url', 'http://localhost:3141/?token=abc_123', '--manifest', 'tasks.jsonl'], '1'))
+      .toEqual({ mode: 'run', launchUrl: 'http://localhost:3141/?token=abc_123', manifest: 'tasks.jsonl', concurrency: 1 })
     expect(parseWebBatchArgs([
-      'run', '--url', 'https://EXAMPLE.com:443', '--manifest', 'tasks.jsonl',
+      'run', '--url', 'https://EXAMPLE.com:443/?token=abc-123', '--manifest', 'tasks.jsonl',
       '--batch-id', id.toUpperCase(), '--concurrency', '3',
     ], '1')).toEqual({
-      mode: 'run', origin: 'https://example.com', manifest: 'tasks.jsonl', batchId: id, concurrency: 3,
+      mode: 'run', launchUrl: 'https://example.com/?token=abc-123', manifest: 'tasks.jsonl', batchId: id, concurrency: 3,
     })
-    expect(parseWebBatchArgs(['resume', '--url', 'http://127.0.0.1', '--batch-id', id, '--take-over'], '1'))
-      .toEqual({ mode: 'resume', origin: 'http://127.0.0.1', batchId: id, takeOver: true })
+    expect(parseWebBatchArgs(['resume', '--url', 'http://127.0.0.1/?token=x', '--batch-id', id, '--take-over'], '1'))
+      .toEqual({ mode: 'resume', launchUrl: 'http://127.0.0.1/?token=x', batchId: id, takeOver: true })
     expect(parseWebBatchArgs(['status', '--batch-id', id], '1'))
       .toEqual({ mode: 'status', batchId: id })
   })
 
   it('rejects origins, batch ids, concurrency, and incomplete commands', () => {
     for (const value of [
-      'ftp://example.com', 'http://user@example.com', 'http://example.com/a',
-      'http://example.com?x=1', 'http://example.com/#x', 'not a url',
-    ]) expect(() => parseWebOrigin(value)).toThrow('origin')
+      'ftp://example.com/?token=x', 'http://user@example.com/?token=x', 'http://example.com/a?token=x',
+      'http://example.com', 'http://example.com/?token=x&extra=y', 'http://example.com/?token=x#y', 'not a url',
+    ]) expect(() => parseWebLaunchUrl(value)).toThrow('URL')
     for (const value of ['0', '-1', '1.5', '01', 'x', String(Number.MAX_SAFE_INTEGER + 1)]) {
       expect(() => parsePositiveInteger(value)).toThrow('positive')
     }
     expect(() => parseBatchId('task-1')).toThrow('UUID')
     expect(() => parseWebBatchArgs([], '1')).toThrow()
-    expect(() => parseWebBatchArgs(['run', '--url', 'http://localhost'], '1')).toThrow()
-    expect(() => parseWebBatchArgs(['status', '--batch-id', randomUUID(), '--url', 'http://localhost'], '1')).toThrow()
+    expect(() => parseWebBatchArgs(['run', '--url', 'http://localhost/?token=x'], '1')).toThrow()
+    expect(() => parseWebBatchArgs(['status', '--batch-id', randomUUID(), '--url', 'http://localhost/?token=x'], '1')).toThrow()
   })
 })
 
@@ -76,8 +76,8 @@ describe('task manifest', () => {
       '',
     ].join('\n'))
     expect(await loadTaskManifest(path)).toEqual([
-      { id: 'one', prompt: 'line one\nline two', cwd: first, agentPreset: 'code' },
-      { id: 'two', prompt: 'work', cwd: second },
+      { id: 'one', prompt: 'line one\nline two', cwd: await realpath(first), agentPreset: 'code' },
+      { id: 'two', prompt: 'work', cwd: await realpath(second) },
     ])
   })
 

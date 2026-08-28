@@ -2,13 +2,13 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { Readable } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { execa } from 'execa'
 import { describe, expect, it } from 'vitest'
 
 const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
 const DSH_BIN = join(REPO_ROOT, 'apps/cli/lib/bin.js')
-const BATCH_BIN = join(REPO_ROOT, 'apps/cli/lib/web-batch-bin.js')
 const HAS_KEY = (process.env.DEEPSEEK_API_KEY?.length ?? 0) > 0
 
 async function probePort(): Promise<number> {
@@ -25,21 +25,23 @@ async function probePort(): Promise<number> {
   return address.port
 }
 
-async function waitForWeb(origin: string): Promise<void> {
-  const deadline = Date.now() + 30_000
-  while (Date.now() < deadline) {
-    try {
-      const response = await fetch(origin)
-      if (response.ok) return
-    } catch {
-      // Connection refusal is the expected startup state.
+function waitForLaunchUrl(child: { readonly stdout?: Readable | null; readonly stderr?: Readable | null }): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let output = ''
+    const timer = setTimeout(() => { reject(new Error(`dsh web did not become ready:\n${output}`)) }, 30_000)
+    const append = (chunk: Buffer | string): void => {
+      output += String(chunk)
+      const launchUrl = /dsh web: (http:\/\/[^\s]+)/u.exec(output)?.[1]
+      if (launchUrl === undefined) return
+      clearTimeout(timer)
+      resolve(launchUrl)
     }
-    await new Promise(resolve => setTimeout(resolve, 100))
-  }
-  throw new Error(`dsh web did not listen at ${origin}`)
+    child.stdout?.on('data', append)
+    child.stderr?.on('data', append)
+  })
 }
 
-describe.skipIf(!HAS_KEY)('dsh-web-batch real provider smoke', () => {
+describe.skipIf(!HAS_KEY)('dsh web-batch real provider smoke', () => {
   it('completes one Web Session through the built executables', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-web-batch-real-'))
     const home = join(root, 'home')
@@ -53,17 +55,16 @@ describe.skipIf(!HAS_KEY)('dsh-web-batch real provider smoke', () => {
       cwd: workspace,
     })}\n`)
     const port = await probePort()
-    const origin = `http://127.0.0.1:${String(port)}`
     const nodeOptions = [process.env.NODE_OPTIONS, '--disable-warning=ExperimentalWarning'].filter(Boolean).join(' ')
-    const host = execa(process.execPath, [DSH_BIN, 'web', '--port', String(port)], {
+    const host = execa(process.execPath, [DSH_BIN, 'web', '--no-open', '--port', String(port)], {
       cwd: workspace,
       reject: false,
       env: { DSH_HOME: home, DSH_TELEMETRY_DISABLED: '1', NODE_OPTIONS: nodeOptions },
     })
     try {
-      await waitForWeb(origin)
+      const launchUrl = await waitForLaunchUrl(host)
       const result = await execa(process.execPath, [
-        BATCH_BIN, 'run', '--url', origin, '--manifest', manifest, '--concurrency', '1',
+        DSH_BIN, 'web-batch', 'run', '--url', launchUrl, '--manifest', manifest, '--concurrency', '1',
       ], {
         reject: false,
         timeout: 180_000,

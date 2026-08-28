@@ -2,7 +2,6 @@
 
 import { randomUUID } from 'node:crypto'
 import { inspect } from 'node:util'
-import type { IApiClient } from '@deepseek-ai/dsh-host-apiproxy'
 import type { WebBatchInvocation } from './args.ts'
 import { loadTaskManifest } from './manifest.ts'
 import {
@@ -14,7 +13,12 @@ import {
 } from './output.ts'
 import { WebBatchRunner, type BatchConnectionLifecycle } from './runner.ts'
 import { WebBatchStore } from './store.ts'
-import { BatchConnection, NodeWebApiClient, type BatchConnectionSinks } from './transport.ts'
+import {
+  BatchConnection,
+  NodeWebApiClient,
+  type BatchConnectionSinks,
+  type IApiClient,
+} from './transport.ts'
 
 /** Process surfaces used by the command implementation. */
 interface WebBatchCommandIo {
@@ -30,8 +34,8 @@ export interface WebBatchCommandOptions {
   io?: WebBatchCommandIo
   /** UUID source for batch, Session, and runner-lock identities. */
   uuid?: () => string
-  /** ApiProxy client factory. */
-  api?: (origin: string) => IApiClient
+  /** Web Remote client factory. */
+  api?: (launchUrl: string) => IApiClient
   /** Event-connection factory. */
   connection?: (api: IApiClient, sinks: BatchConnectionSinks) => BatchConnectionLifecycle
   /** Signal source. */
@@ -122,7 +126,7 @@ export async function runWebBatchCommand(
     if (invocation.mode === 'resume') {
       for (const task of store.tasks()) emit(taskStateOutput(store.batchId, task))
     }
-    const api = options.api?.(invocation.origin) ?? new NodeWebApiClient(invocation.origin)
+    const api = options.api?.(invocation.launchUrl) ?? new NodeWebApiClient(invocation.launchUrl)
     const runner = new WebBatchRunner(store, api, {
       output: emit,
       diagnostic: (message, error) => { diagnostic(io, message, error) },

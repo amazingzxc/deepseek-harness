@@ -1,13 +1,14 @@
 /** Recoverable Web Session scheduler for dsh-web-batch. */
 
 import { isDeepStrictEqual } from 'node:util'
+import type {} from '@deepseek-ai/dsh-agent/types'
 import type {
   HistoryEntry,
-  HostFrame,
   IApiClient,
   MuxFrame,
   RpcRequest,
-} from '@deepseek-ai/dsh-host-apiproxy'
+  HostFrame,
+} from './transport.ts'
 import type { SessionEvent, TurnEndReason } from '@deepseek-ai/dsh-session/types'
 import type { BatchOutput } from './output.ts'
 import { taskStateOutput } from './output.ts'
@@ -89,7 +90,8 @@ type HumanPrompt = { kind: 'text'; text: string } | { kind: 'rich' }
 
 function humanPrompt(message: Pick<QueueItem['message'], 'source' | 'content'>): HumanPrompt | undefined {
   if (message.source.kind !== 'user') return undefined
-  if (message.content.length !== 1 || message.content[0]?.type !== 'text') return { kind: 'rich' }
+  if (message.content.length !== 1 || message.content[0]?.type !== 'text'
+    || typeof message.content[0].text !== 'string') return { kind: 'rich' }
   return { kind: 'text', text: message.content[0].text }
 }
 
@@ -552,7 +554,7 @@ export class WebBatchRunner {
       try {
         const task = this.latest(position)
         const created = await this.api.sessions.create({
-          sessionId: task.sessionId as never,
+          sessionId: task.sessionId,
           cwd: task.cwd,
           ...task.agentPreset === undefined ? {} : { agentPreset: task.agentPreset },
         }, signal)
@@ -573,7 +575,7 @@ export class WebBatchRunner {
           && !this.promptQueued.has(reconciled.sessionId)
           && !this.promptClaimed.has(reconciled.sessionId)) {
           const prompted = await this.api.sessions.prompt({
-            sessionId: reconciled.sessionId as never,
+            sessionId: reconciled.sessionId,
             mode: 'queue',
             content: [{ type: 'text', text: reconciled.prompt }],
           }, signal)
@@ -596,11 +598,11 @@ export class WebBatchRunner {
   }
 
   private async readHistory(task: BatchTaskRecord, signal: AbortSignal): Promise<HistoryEntry[] | undefined> {
-    const pages: HistoryEntry[][] = []
+    const pages: Array<readonly HistoryEntry[]> = []
     let beforeSeq: number | undefined
     while (!signal.aborted) {
       const response = await this.api.sessions.history({
-        sessionId: task.sessionId as never,
+        sessionId: task.sessionId,
         maxMessages: HISTORY_PAGE_MESSAGES,
         ...beforeSeq === undefined ? {} : { beforeSeq },
       }, signal)
